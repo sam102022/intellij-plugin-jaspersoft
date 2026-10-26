@@ -1,0 +1,12 @@
+.gradle/
+build/
+runner/build/
+.intellijPlatform/
+.kotlin/
+out/
+*.iml
+.idea/*
+!.idea/codeStyles/
+jasperreports-master-*.zip
+jasperreports-master-7.1.0/
+rapports de tests/
