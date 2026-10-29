@@ -7,7 +7,8 @@ Spécification : https://claude.ai/artifact/WcjWLV7adppbVnjuZ3F4SV
 
 ## Prérequis
 
-- JDK 21 (Gradle peut le télécharger automatiquement grâce au plugin foojay).
+- JDK 21 pour construire le plugin (imposé par IntelliJ 2026.1 ; Gradle peut le télécharger grâce au plugin foojay).
+- Projets ouverts : JDK 17 minimum (le runner et les rapports s'exécutent sur le JDK du module).
 - Accès à Maven Central, au portail Gradle et aux dépôts JetBrains (premier build : téléchargement d'IntelliJ IDEA 2026.1).
 
 ## Commandes

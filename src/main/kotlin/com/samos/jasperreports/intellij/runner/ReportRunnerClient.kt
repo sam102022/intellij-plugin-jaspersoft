@@ -42,6 +42,20 @@ class ReportRunnerClient(private val project: Project) : Disposable {
     /** EF-67 */
     var timeoutSeconds: Long = 60
 
+    /** Dernier dossier de rendu par rapport : supprimé au rendu suivant du même rapport. */
+    private val lastPreviewDirs = java.util.concurrent.ConcurrentHashMap<Path, Path>()
+
+    init {
+        // Rendus d'une session précédente : jamais relus, on les supprime au démarrage.
+        ApplicationManager.getApplication().executeOnPooledThread(Runnable {
+            runCatching {
+                Files.list(cacheDir()).use { dirs ->
+                    dirs.filter { it.fileName.toString().startsWith("preview-") }.forEach(::deleteRecursively)
+                }
+            }
+        })
+    }
+
     fun compile(target: RunTarget): CompletableFuture<RunnerResult> =
         execute(target, request("compile", target), onPage = null)
 
@@ -59,7 +73,7 @@ class ReportRunnerClient(private val project: Project) : Disposable {
             add("render", JsonObject().apply {
                 addProperty("scale", options.scale)
                 addProperty("maxPages", options.maxPages)
-                addProperty("outputDir", Files.createTempDirectory(cacheDir(), "preview-").toString())
+                addProperty("outputDir", newPreviewDir(target.jrxml).toString())
             })
         }
         return execute(target, request, onPage)
@@ -106,6 +120,19 @@ class ReportRunnerClient(private val project: Project) : Disposable {
     private fun restart(runner: RunnerProcess) = synchronized(lock) {
         runner.destroy()
         if (process === runner) process = null
+    }
+
+    /** Nouveau dossier de rendu pour ce rapport ; celui du rendu précédent est supprimé (les pages sont relues depuis le nouveau). */
+    private fun newPreviewDir(jrxml: Path): Path {
+        val dir = Files.createTempDirectory(cacheDir(), "preview-")
+        lastPreviewDirs.put(jrxml, dir)?.let(::deleteRecursively)
+        return dir
+    }
+
+    private fun deleteRecursively(dir: Path) {
+        runCatching {
+            Files.walk(dir).use { paths -> paths.sorted(Comparator.reverseOrder<Path>()).forEach { Files.deleteIfExists(it) } }
+        }
     }
 
     private fun cacheDir(): Path =

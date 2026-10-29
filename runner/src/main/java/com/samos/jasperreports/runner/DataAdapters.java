@@ -76,6 +76,14 @@ final class DataAdapters {
         return null;
     }
 
+    /** Adaptateur choisi explicitement dans l'aperçu (liste des adaptateurs du module). */
+    static ObjectNode fromFile(Path adapterFile, Path jrxml, JsonNode searchRoots) throws Exception {
+        if (!Files.isRegularFile(adapterFile)) {
+            throw new IllegalArgumentException("Data adapter " + adapterFile + " not found.");
+        }
+        return parse(adapterFile, jrxml, searchRoots);
+    }
+
     private static ObjectNode parse(Path adapterFile, Path jrxml, JsonNode searchRoots) throws Exception {
         DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
         factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);

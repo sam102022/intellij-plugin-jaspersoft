@@ -11,6 +11,8 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
+import java.util.TimeZone;
 import java.util.Map;
 
 /** Conversion des valeurs de paramètres saisies dans le formulaire d'aperçu (EF-74). */
@@ -53,6 +55,9 @@ final class Parameters {
             case "java.time.LocalDateTime" -> LocalDateTime.parse(text.trim());
             case "java.util.Date" -> Date.from(LocalDate.parse(text.trim()).atStartOfDay(ZoneId.systemDefault()).toInstant());
             case "java.sql.Timestamp" -> Timestamp.valueOf(LocalDateTime.parse(text.trim()));
+            // REPORT_LOCALE (choisit le bundle des $R{}) et REPORT_TIME_ZONE.
+            case "java.util.Locale" -> Locale.forLanguageTag(text.trim().replace('_', '-'));
+            case "java.util.TimeZone" -> TimeZone.getTimeZone(ZoneId.of(text.trim()));
             default -> throw new IllegalArgumentException("Unsupported parameter type " + type);
         };
     }

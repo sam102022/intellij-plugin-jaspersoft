@@ -11,6 +11,7 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -40,7 +41,7 @@ public final class ReportRunner {
     });
     private volatile Future<?> current;
 
-    private ReportRunner(PrintStream protocolOut) {
+    ReportRunner(PrintStream protocolOut) { // accessible au paquet pour les tests
         this.protocolOut = protocolOut;
     }
 
@@ -92,13 +93,18 @@ public final class ReportRunner {
         worker.shutdownNow();
     }
 
-    private void handle(long id, JsonNode request) {
+    void handle(long id, JsonNode request) {
+        ReportJob job = new ReportJob(this, id, request);
         try {
-            new ReportJob(this, id, request).run();
+            job.run();
         } catch (InterruptedException e) {
             send(result(id, "cancelled", 0, List.of()));
         } catch (Throwable t) {
-            send(errorResult(id, Diagnostics.describe(t)));
+            // L'erreur d'abord, puis les avertissements qui l'expliquent souvent.
+            List<Map<String, Object>> diagnostics = new ArrayList<>();
+            diagnostics.add(Diagnostics.fromFailure(t));
+            diagnostics.addAll(job.diagnostics());
+            send(result(id, "error", 0, diagnostics));
         }
     }
 

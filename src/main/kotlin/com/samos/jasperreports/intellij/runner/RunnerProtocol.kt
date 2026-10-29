@@ -45,6 +45,15 @@ sealed interface DataSourceConfig {
         }
     }
 
+    /** Adaptateur Studio choisi dans la liste de l'aperçu. */
+    data class AdapterFile(val path: String, val searchRoots: List<String> = emptyList()) : DataSourceConfig {
+        override fun toJson() = JsonObject().apply {
+            addProperty("type", "adapter")
+            addProperty("path", path)
+            add("searchRoots", JsonArray().also { array -> searchRoots.forEach { root -> array.add(root) } })
+        }
+    }
+
     data class Empty(val records: Int = 1) : DataSourceConfig {
         override fun toJson() = JsonObject().apply {
             addProperty("type", "empty")

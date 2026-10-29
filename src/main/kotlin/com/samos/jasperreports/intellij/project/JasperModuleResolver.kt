@@ -12,6 +12,7 @@ import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.vfs.VirtualFile
 import com.samos.jasperreports.intellij.JasperBundle
 import java.io.File
+import java.nio.file.Files
 import java.nio.file.Path
 
 /** Version de JasperReports trouvée dans le classpath du module. */
@@ -39,9 +40,47 @@ data class RunTarget(
     val jrxml: Path,
     /** Racines du module et du projet : base des chemins relatifs des adaptateurs Studio. */
     val searchRoots: List<String> = emptyList(),
+    /** Empreinte des classes compilées et des JAR du classpath (voir [ClasspathStamp]). */
+    val classpathStamp: Long = 0,
 ) {
-    /** Un runner est réutilisable tant que le JDK et le classpath ne changent pas. */
-    val processKey: String get() = javaExecutable.toString() + "|" + classpath.joinToString(File.pathSeparator)
+    /**
+     * Un runner est réutilisable tant que le JDK, le classpath ET son contenu ne changent pas : une JVM ne recharge
+     * pas une classe déjà chargée, donc après une recompilation du projet il faut un nouveau runner.
+     */
+    val processKey: String
+        get() = javaExecutable.toString() + "|" + classpath.joinToString(File.pathSeparator) + "|" + classpathStamp
+}
+
+/**
+ * Empreinte du contenu du classpath : date de modification la plus récente et nombre de fichiers des dossiers de
+ * classes (target/classes, target/test-classes…), date des JAR (dépendances SNAPSHOT). Quelques dizaines de
+ * millisecondes pour un module courant ; calculée hors action de lecture.
+ */
+object ClasspathStamp {
+    fun of(classpath: List<String>): Long {
+        var stamp = 17L
+        for (entry in classpath) {
+            val path = Path.of(entry)
+            if (Files.isDirectory(path)) {
+                var latest = 0L
+                var count = 0L
+                try {
+                    Files.walk(path).use { files ->
+                        files.filter { Files.isRegularFile(it) }.forEach {
+                            count++
+                            latest = maxOf(latest, Files.getLastModifiedTime(it).toMillis())
+                        }
+                    }
+                } catch (e: Exception) {
+                    // Dossier en cours d'écriture par une compilation : l'empreinte changera au prochain appel.
+                }
+                stamp = stamp * 31 + latest * 7 + count
+            } else if (Files.isRegularFile(path)) {
+                stamp = stamp * 31 + Files.getLastModifiedTime(path).toMillis()
+            }
+        }
+        return stamp
+    }
 }
 
 sealed interface ResolveResult {
@@ -55,9 +94,23 @@ sealed interface ResolveResult {
  */
 object JasperModuleResolver {
 
-    private val MIN_JDK = JavaSdkVersion.JDK_21
+    private val MIN_JDK = JavaSdkVersion.JDK_17
 
-    fun resolve(project: Project, file: VirtualFile): ResolveResult = runReadAction {
+    /** Racines du module du fichier et du projet (recherche des adaptateurs Studio), même sans JDK valide. */
+    fun searchRoots(project: Project, file: VirtualFile): List<String> = runReadAction {
+        val module = ModuleUtilCore.findModuleForFile(file, project)
+        val roots = module?.let { ModuleRootManager.getInstance(it).contentRoots.map { root -> root.path } }.orEmpty()
+        (roots + listOfNotNull(project.basePath)).distinct()
+    }
+
+    fun resolve(project: Project, file: VirtualFile): ResolveResult =
+        when (val result = resolveModel(project, file)) {
+            is ResolveResult.Ok -> ResolveResult.Ok(result.target.copy(classpathStamp = ClasspathStamp.of(result.target.classpath)))
+            is ResolveResult.Error -> result
+        }
+
+    /** Partie qui lit le modèle de l'IDE, en action de lecture ; l'empreinte du classpath est calculée hors lecture. */
+    private fun resolveModel(project: Project, file: VirtualFile): ResolveResult = runReadAction {
         val module = ModuleUtilCore.findModuleForFile(file, project)
             ?: return@runReadAction ResolveResult.Error(JasperBundle.message("runner.error.noModule"))
 
@@ -88,7 +141,6 @@ object JasperModuleResolver {
             return@runReadAction ResolveResult.Error(JasperBundle.message("runner.error.notV7", jasper.toString()))
         }
 
-        val roots = ModuleRootManager.getInstance(module).contentRoots.map { it.path } + listOfNotNull(project.basePath)
-        ResolveResult.Ok(RunTarget(module.name, Path.of(java), classpath, jasper, Path.of(file.path), roots.distinct()))
+        ResolveResult.Ok(RunTarget(module.name, Path.of(java), classpath, jasper, Path.of(file.path), searchRoots(project, file)))
     }
 }

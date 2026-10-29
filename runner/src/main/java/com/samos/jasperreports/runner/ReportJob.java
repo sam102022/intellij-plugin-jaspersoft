@@ -9,7 +9,10 @@ import net.sf.jasperreports.engine.JasperReport;
 import net.sf.jasperreports.engine.SimpleJasperReportsContext;
 import net.sf.jasperreports.engine.design.JRValidationException;
 import net.sf.jasperreports.engine.design.JRValidationFault;
+import net.sf.jasperreports.engine.DefaultJasperReportsContext;
+import net.sf.jasperreports.repo.FileRepositoryPersistenceServiceFactory;
 import net.sf.jasperreports.repo.FileRepositoryService;
+import net.sf.jasperreports.repo.PersistenceServiceFactory;
 import net.sf.jasperreports.repo.RepositoryService;
 
 import javax.imageio.ImageIO;
@@ -20,8 +23,14 @@ import java.awt.image.RenderedImage;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.FileVisitResult;
+import java.nio.file.FileVisitOption;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.HashMap;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -58,9 +67,9 @@ final class ReportJob {
 
         // Les sous-rapports compilés à la volée sont cherchés avant ceux du dossier du rapport (EF-76).
         SimpleJasperReportsContext context = new SimpleJasperReportsContext();
-        context.setExtensions(RepositoryService.class, List.of(
-                new FileRepositoryService(context, compiledDir.toString(), false),
-                new FileRepositoryService(context, reportDir.toString(), false)));
+        context.setExtensions(RepositoryService.class, repositories(context, compiledDir, reportDir));
+        // Sans cette fabrique, un FileRepositoryService trouve le fichier mais ne sait pas le charger.
+        context.setExtensions(PersistenceServiceFactory.class, persistenceFactories());
 
         JasperReport report;
         try {
@@ -71,8 +80,16 @@ final class ReportJob {
             }
             finish("error", 0);
             return;
-        } catch (JRException e) {
-            diagnostics.addAll(Diagnostics.fromCompileError(e));
+        } catch (JRException | RuntimeException e) {
+            // Élément d'une extension absente (chart, codes-barres…) : message dédié avec l'artefact à ajouter.
+            Map<String, Object> missing = Diagnostics.missingExtension(e);
+            if (missing != null) {
+                diagnostics.add(missing);
+            } else if (e instanceof JRException) {
+                diagnostics.addAll(Diagnostics.fromCompileError(e));
+            } else {
+                throw e;
+            }
             finish("error", 0);
             return;
         }
@@ -82,7 +99,9 @@ final class ReportJob {
             return;
         }
 
-        compileSubreports(context, jrxml, compiledDir, new HashSet<>());
+        List<Path> roots = new ArrayList<>();
+        request.path("dataSource").path("searchRoots").forEach(root -> roots.add(Path.of(root.asText())));
+        compileSubreports(context, jrxml, reportDir, compiledDir, new SourceIndex(roots), new HashSet<>());
         checkInterrupted();
 
         Map<String, Object> parameters = Parameters.convert(request.path("parameters"), diagnostics);
@@ -115,35 +134,122 @@ final class ReportJob {
         finish("ok", total);
     }
 
-    /** Compile les .jrxml des sous-rapports référencés par un chemin littéral, s'ils n'ont pas de .jasper à jour. */
-    private void compileSubreports(SimpleJasperReportsContext context, Path jrxml, Path compiledDir, Set<Path> visited)
-            throws IOException, InterruptedException {
-        if (!visited.add(jrxml)) {
+    /**
+     * Compile à la volée les .jrxml des sous-rapports référencés par un chemin littéral ("x.jasper"), récursivement.
+     * Le moteur cherche "x.jasper" dans le cache puis dans le dossier du rapport principal : on ne compile donc que si
+     * ce dossier n'a pas de x.jasper plus récent que sa source. La source est cherchée à côté du rapport qui
+     * l'appelle, à côté du rapport principal, puis dans tout le module.
+     */
+    private void compileSubreports(SimpleJasperReportsContext context, Path jrxml, Path mainDir, Path compiledDir,
+                                   SourceIndex index, Set<Path> visited) throws IOException, InterruptedException {
+        if (!visited.add(jrxml.normalize())) {
             return;
         }
         Matcher matcher = SUBREPORT_LITERAL.matcher(Files.readString(jrxml));
+        Set<String> seen = new HashSet<>();
         while (matcher.find()) {
             checkInterrupted();
             String name = matcher.group(1);
-            Path source = jrxml.resolveSibling(name + ".jrxml");
-            if (!Files.isRegularFile(source)) {
+            if (!seen.add(name)) {
                 continue;
             }
-            Path besideSource = jrxml.resolveSibling(name + ".jasper");
+            Path besideMain = mainDir.resolve(name + ".jasper");
             Path cached = compiledDir.resolve(name + ".jasper");
-            if (isUpToDate(besideSource, source)) {
+            Path source = index.find(name, jrxml.getParent(), mainDir);
+            if (source == null) {
+                if (!Files.isRegularFile(besideMain) && !Files.isRegularFile(cached)) {
+                    diagnostics.add(Diagnostics.diagnostic("warning",
+                            "Subreport " + name + ".jasper is used by " + jrxml.getFileName()
+                                    + " but neither " + name + ".jasper nor " + name + ".jrxml was found in the module.",
+                            jrxml.toString()));
+                }
+                continue;
+            }
+            if (isUpToDate(besideMain, source)) {
                 Files.deleteIfExists(cached);
             } else if (!isUpToDate(cached, source)) {
                 try {
                     Files.createDirectories(cached.getParent());
                     JasperCompileManager.getInstance(context).compileToFile(source.toString(), cached.toString());
-                } catch (JRException e) {
-                    diagnostics.add(Diagnostics.diagnostic("warning",
+                } catch (JRException | RuntimeException e) {
+                    Map<String, Object> missing = Diagnostics.missingExtension(e);
+                    diagnostics.add(missing != null ? missing : Diagnostics.diagnostic("warning",
                             "Subreport " + source.getFileName() + " could not be compiled: " + e.getMessage(), source.toString()));
                     continue;
                 }
             }
-            compileSubreports(context, source, compiledDir, visited);
+            compileSubreports(context, source, mainDir, compiledDir, index, visited);
+        }
+    }
+
+    /** Dépôts : sous-rapports compilés, dossier du rapport, puis ceux par défaut (classpath, URL). */
+    private static List<RepositoryService> repositories(SimpleJasperReportsContext context, Path compiledDir, Path reportDir) {
+        List<RepositoryService> services = new ArrayList<>();
+        services.add(new FileRepositoryService(context, compiledDir.toString(), false));
+        services.add(new FileRepositoryService(context, reportDir.toString(), false));
+        services.addAll(DefaultJasperReportsContext.getInstance().getExtensions(RepositoryService.class));
+        return services;
+    }
+
+    private static List<PersistenceServiceFactory> persistenceFactories() {
+        List<PersistenceServiceFactory> factories = new ArrayList<>();
+        factories.add(FileRepositoryPersistenceServiceFactory.getInstance());
+        factories.addAll(DefaultJasperReportsContext.getInstance().getExtensions(PersistenceServiceFactory.class));
+        return factories;
+    }
+
+    /** Avertissements accumulés avant une erreur (adaptateur introuvable, sous-rapport non compilé…). */
+    List<Map<String, Object>> diagnostics() {
+        return diagnostics;
+    }
+
+    /** Index paresseux des .jrxml du module, par nom de fichier, hors dossiers de build. */
+    private static final class SourceIndex {
+        private static final Set<String> SKIPPED = Set.of("target", "build", "out", "bin", "node_modules", ".git", ".idea", ".gradle");
+        private final List<Path> roots;
+        private Map<String, Path> byName;
+
+        SourceIndex(List<Path> roots) {
+            this.roots = roots;
+        }
+
+        Path find(String name, Path callerDir, Path mainDir) throws IOException {
+            for (Path dir : List.of(callerDir, mainDir)) {
+                Path candidate = dir.resolve(name + ".jrxml");
+                if (Files.isRegularFile(candidate)) {
+                    return candidate;
+                }
+            }
+            if (byName == null) {
+                byName = new HashMap<>();
+                for (Path root : roots) {
+                    if (!Files.isDirectory(root)) {
+                        continue;
+                    }
+                    Files.walkFileTree(root, EnumSet.noneOf(FileVisitOption.class), 20, new SimpleFileVisitor<>() {
+                        @Override
+                        public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
+                            return !dir.equals(root) && SKIPPED.contains(String.valueOf(dir.getFileName()))
+                                    ? FileVisitResult.SKIP_SUBTREE : FileVisitResult.CONTINUE;
+                        }
+
+                        @Override
+                        public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
+                            String fileName = file.getFileName().toString();
+                            if (fileName.endsWith(".jrxml")) {
+                                byName.putIfAbsent(fileName, file);
+                            }
+                            return FileVisitResult.CONTINUE;
+                        }
+
+                        @Override
+                        public FileVisitResult visitFileFailed(Path file, IOException e) {
+                            return FileVisitResult.CONTINUE;
+                        }
+                    });
+                }
+            }
+            return byName.get(Path.of(name + ".jrxml").getFileName().toString());
         }
     }
 

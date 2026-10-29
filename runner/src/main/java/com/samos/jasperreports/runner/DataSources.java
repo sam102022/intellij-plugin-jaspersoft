@@ -53,6 +53,10 @@ final class DataSources {
                 describe.accept("empty data source (1 record)");
                 return fillManager.fill(report, parameters, new JREmptyDataSource(1));
             }
+            case "adapter" -> {
+                JsonNode adapter = DataAdapters.fromFile(Path.of(config.path("path").asText()), jrxml, config.path("searchRoots"));
+                return fill(context, report, parameters, adapter, jrxml, diagnostics, describe);
+            }
             case "empty" -> {
                 int records = config.path("records").asInt(1);
                 describe.accept("empty data source (" + records + " record(s))");
@@ -122,7 +126,12 @@ final class DataSources {
             throw new IllegalStateException("Data adapter factory " + factoryClass
                     + " not found on the module classpath. Build the project (test classes included) and retry.");
         }
-        Method method = factory.getMethod(methodName);
+        Method method;
+        try {
+            method = factory.getMethod(methodName);
+        } catch (NoSuchMethodException e) {
+            throw new IllegalStateException(explainMissingMethod(factory, methodName));
+        }
         if (!Modifier.isStatic(method.getModifiers())) {
             throw new IllegalStateException(factoryClass + "." + methodName + "() must be static.");
         }
@@ -141,5 +150,56 @@ final class DataSources {
         }
         throw new IllegalStateException(factoryClass + "." + methodName
                 + "() must return a Collection or an array, not " + (result == null ? "null" : result.getClass().getName()));
+    }
+
+    /**
+     * Le data adapter désigne une méthode que l'aperçu ne peut pas appeler : dit pourquoi (absente, non publique,
+     * avec des paramètres) et propose les méthodes utilisables de la fabrique.
+     */
+    static String explainMissingMethod(Class<?> factory, String methodName) {
+        String target = factory.getName() + "." + methodName + "()";
+        StringBuilder text = new StringBuilder();
+        List<Method> sameName = new java.util.ArrayList<>();
+        for (Class<?> c = factory; c != null && c != Object.class; c = c.getSuperclass()) {
+            for (Method m : c.getDeclaredMethods()) {
+                if (m.getName().equals(methodName)) {
+                    sameName.add(m);
+                }
+            }
+        }
+        if (sameName.isEmpty()) {
+            text.append("The data adapter calls ").append(target).append(", but ").append(factory.getSimpleName())
+                    .append(" has no method named ").append(methodName)
+                    .append(" (renamed or removed? rebuild the project if it was added recently).");
+        } else {
+            Method m = sameName.get(0);
+            String reason = m.getParameterCount() > 0 ? "it takes parameters (" + params(m) + ")"
+                    : !Modifier.isPublic(m.getModifiers()) ? "it is not public"
+                    : !Modifier.isPublic(m.getDeclaringClass().getModifiers()) ? "its class is not public"
+                    : "it cannot be called";
+            text.append("The data adapter calls ").append(target).append(", but ").append(reason)
+                    .append(". It must be public static, without parameters, and return a Collection or an array.");
+        }
+        List<String> usable = new java.util.ArrayList<>();
+        for (Method m : factory.getMethods()) {
+            if (Modifier.isStatic(m.getModifiers()) && m.getParameterCount() == 0
+                    && (Collection.class.isAssignableFrom(m.getReturnType()) || m.getReturnType().isArray())) {
+                usable.add(m.getName() + "()");
+            }
+        }
+        if (!usable.isEmpty()) {
+            java.util.Collections.sort(usable);
+            text.append(" Usable methods of ").append(factory.getSimpleName()).append(": ").append(String.join(", ", usable)).append('.');
+        }
+        return text.toString();
+    }
+
+    private static String params(Method m) {
+        StringBuilder b = new StringBuilder();
+        for (Class<?> p : m.getParameterTypes()) {
+            if (b.length() > 0) b.append(", ");
+            b.append(p.getSimpleName());
+        }
+        return b.toString();
     }
 }
