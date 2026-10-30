@@ -1,0 +1,15 @@
+<jasperReport name="${NAME}" language="java" pageWidth="595" pageHeight="842" columnWidth="555" leftMargin="20" rightMargin="20" topMargin="20" bottomMargin="20">
+	<title height="40">
+		<element kind="staticText" x="0" y="0" width="555" height="30" fontSize="18.0" bold="true">
+			<text><![CDATA[${NAME}]]></text>
+		</element>
+	</title>
+	<detail>
+		<band height="20"/>
+	</detail>
+	<pageFooter height="20">
+		<element kind="textField" x="455" y="0" width="100" height="20" hTextAlign="Right">
+			<expression><![CDATA["Page " + ${DS}V{PAGE_NUMBER}]]></expression>
+		</element>
+	</pageFooter>
+</jasperReport>

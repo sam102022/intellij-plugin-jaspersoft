@@ -1,0 +1,119 @@
+<idea-plugin>
+    <id>com.samos.jasperreports.editor</id>
+    <name>JasperReports Editor</name>
+    <vendor>samos</vendor>
+
+    <description><![CDATA[
+    Advanced editor for JasperReports 7 report templates (<code>.jrxml</code>):
+    report structure tree, navigation, compilation with the project's own JasperReports
+    library and page-by-page image preview.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.xml</depends>
+    <depends>com.intellij.java</depends>
+    <!-- EF-38 : clés $R{} dans les fichiers .properties du bundle -->
+    <depends>com.intellij.properties</depends>
+
+    <resource-bundle>messages.JasperBundle</resource-bundle>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- EF-01 -->
+        <fileType name="JasperReports Report"
+                  implementationClass="com.samos.jasperreports.intellij.filetype.JrxmlFileType"
+                  fieldName="INSTANCE" language="XML" extensions="jrxml"/>
+        <fileType name="JasperReports Style Template"
+                  implementationClass="com.samos.jasperreports.intellij.filetype.JrtxFileType"
+                  fieldName="INSTANCE" language="XML" extensions="jrtx"/>
+
+        <!-- Section 10.2 : modèle DOM du format 7 -->
+        <dom.fileMetaData implementation="com.samos.jasperreports.intellij.dom.JrxmlDomFileDescription"
+                          rootTagName="jasperReport"/>
+
+        <!-- EF-03 : éditeur composé XML + aperçu -->
+        <fileEditorProvider implementation="com.samos.jasperreports.intellij.preview.JrxmlSplitEditorProvider"/>
+
+        <!-- EF-04 : arborescence -->
+        <toolWindow id="Jasper Report" anchor="right" secondary="false"
+                    icon="AllIcons.Toolwindows.ToolWindowStructure"
+                    factoryClass="com.samos.jasperreports.intellij.structure.ReportStructureToolWindowFactory"/>
+
+        <!-- EF-05 : bandeau pour le format 6 -->
+        <editorNotificationProvider
+                implementation="com.samos.jasperreports.intellij.editor.Jrxml6FormatNotificationProvider"/>
+
+        <!-- EF-07 -->
+        <internalFileTemplate name="JasperReports Report"/>
+
+        <!-- EF-31 à EF-35, EF-38 : références $F{} $P{} $V{} $R{}, styles, groupes, sous-jeux de données -->
+        <psi.referenceContributor language="XML"
+                                  implementation="com.samos.jasperreports.intellij.references.JasperReferenceContributor"/>
+        <completion.contributor language="XML" order="first"
+                                implementationClass="com.samos.jasperreports.intellij.completion.JasperCompletionContributor"/>
+        <completion.contributor language="JAVA" order="first"
+                                implementationClass="com.samos.jasperreports.intellij.completion.JasperCompletionContributor"/>
+        <typedHandler implementation="com.samos.jasperreports.intellij.completion.JasperTypedHandler"/>
+
+        <!-- EF-30, EF-37, EF-39 : expressions en Java, requêtes en SQL (si le langage SQL est disponible) -->
+        <multiHostInjector implementation="com.samos.jasperreports.intellij.injection.JasperInjector"/>
+        <!-- EF-50, EF-51 : diagnostics du moteur dans l'éditeur (et l'onglet du fichier de la fenêtre Problems) -->
+        <annotator language="XML" implementationClass="com.samos.jasperreports.intellij.diagnostics.EngineDiagnosticsAnnotator"/>
+        <!-- EF-49 -->
+        <applicationConfigurable parentId="tools" id="com.samos.jasperreports.settings" key="settings.title" bundle="messages.JasperBundle"
+                                 instance="com.samos.jasperreports.intellij.diagnostics.JasperSettingsConfigurable"/>
+        <annotator language="JAVA" implementationClass="com.samos.jasperreports.intellij.injection.JasperExpressionAnnotator"/>
+        <daemon.highlightInfoFilter implementation="com.samos.jasperreports.intellij.injection.JasperFunctionCallFilter"/>
+
+        <!-- Section 8 : inspections -->
+        <localInspection language="XML" shortName="JasperUnresolvedSymbol"
+                         bundle="messages.JasperBundle" key="inspection.unresolved.name" groupKey="inspection.group"
+                         enabledByDefault="true" level="ERROR"
+                         implementationClass="com.samos.jasperreports.intellij.inspections.JasperUnresolvedSymbolInspection"/>
+        <localInspection language="XML" shortName="JasperDuplicateDeclaration"
+                         bundle="messages.JasperBundle" key="inspection.duplicate.name" groupKey="inspection.group"
+                         enabledByDefault="true" level="ERROR"
+                         implementationClass="com.samos.jasperreports.intellij.inspections.JasperDuplicateDeclarationInspection"/>
+        <localInspection language="XML" shortName="JasperLayout"
+                         bundle="messages.JasperBundle" key="inspection.geometry.name" groupKey="inspection.group"
+                         enabledByDefault="true" level="WARNING"
+                         implementationClass="com.samos.jasperreports.intellij.inspections.JasperLayoutInspection"/>
+        <localInspection language="XML" shortName="JasperUnknownClass"
+                         bundle="messages.JasperBundle" key="inspection.unknownClass.name" groupKey="inspection.group"
+                         enabledByDefault="true" level="ERROR"
+                         implementationClass="com.samos.jasperreports.intellij.inspections.JasperUnknownClassInspection"/>
+        <localInspection language="XML" shortName="JasperUnusedDeclaration"
+                         bundle="messages.JasperBundle" key="inspection.unused.name" groupKey="inspection.group"
+                         enabledByDefault="true" level="WEAK WARNING"
+                         implementationClass="com.samos.jasperreports.intellij.inspections.JasperUnusedDeclarationInspection"/>
+
+        <notificationGroup id="JasperReports" displayType="BALLOON" key="notification.group"/>
+    </extensions>
+
+    <actions>
+        <!-- EF-47 -->
+        <action id="JasperReports.CompileReport"
+                class="com.samos.jasperreports.intellij.actions.CompileReportAction"
+                icon="AllIcons.Actions.Compile">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
+        </action>
+        <!-- EF-48 -->
+        <action id="JasperReports.CompileAllReports"
+                class="com.samos.jasperreports.intellij.actions.CompileAllReportsAction"
+                icon="AllIcons.Actions.Compile">
+            <add-to-group group-id="BuildMenu" anchor="last"/>
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
+        </action>
+        <!-- EF-07 -->
+        <action id="JasperReports.NewReport"
+                class="com.samos.jasperreports.intellij.actions.NewReportAction">
+            <add-to-group group-id="NewGroup" anchor="last"/>
+        </action>
+    </actions>
+
+    <applicationListeners>
+        <!-- EF-49 : compilation à l'enregistrement (désactivée par défaut) -->
+        <listener class="com.samos.jasperreports.intellij.diagnostics.CompileOnSaveListener"
+                  topic="com.intellij.openapi.fileEditor.FileDocumentManagerListener"/>
+    </applicationListeners>
+</idea-plugin>
