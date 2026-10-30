@@ -12,6 +12,8 @@
     <depends>com.intellij.modules.platform</depends>
     <depends>com.intellij.modules.xml</depends>
     <depends>com.intellij.java</depends>
+    <!-- EF-38 : clés $R{} dans les fichiers .properties du bundle -->
+    <depends>com.intellij.properties</depends>
 
     <resource-bundle>messages.JasperBundle</resource-bundle>
 
@@ -42,6 +44,35 @@
 
         <!-- EF-07 -->
         <internalFileTemplate name="JasperReports Report"/>
+
+        <!-- EF-31 à EF-35, EF-38 : références $F{} $P{} $V{} $R{}, styles, groupes, sous-jeux de données -->
+        <psi.referenceContributor language="XML"
+                                  implementation="com.samos.jasperreports.intellij.references.JasperReferenceContributor"/>
+        <completion.contributor language="XML" order="first"
+                                implementationClass="com.samos.jasperreports.intellij.completion.JasperCompletionContributor"/>
+        <typedHandler implementation="com.samos.jasperreports.intellij.completion.JasperTypedHandler"/>
+
+        <!-- Section 8 : inspections -->
+        <localInspection language="XML" shortName="JasperUnresolvedSymbol"
+                         bundle="messages.JasperBundle" key="inspection.unresolved.name" groupKey="inspection.group"
+                         enabledByDefault="true" level="ERROR"
+                         implementationClass="com.samos.jasperreports.intellij.inspections.JasperUnresolvedSymbolInspection"/>
+        <localInspection language="XML" shortName="JasperDuplicateDeclaration"
+                         bundle="messages.JasperBundle" key="inspection.duplicate.name" groupKey="inspection.group"
+                         enabledByDefault="true" level="ERROR"
+                         implementationClass="com.samos.jasperreports.intellij.inspections.JasperDuplicateDeclarationInspection"/>
+        <localInspection language="XML" shortName="JasperLayout"
+                         bundle="messages.JasperBundle" key="inspection.geometry.name" groupKey="inspection.group"
+                         enabledByDefault="true" level="WARNING"
+                         implementationClass="com.samos.jasperreports.intellij.inspections.JasperLayoutInspection"/>
+        <localInspection language="XML" shortName="JasperUnknownClass"
+                         bundle="messages.JasperBundle" key="inspection.unknownClass.name" groupKey="inspection.group"
+                         enabledByDefault="true" level="ERROR"
+                         implementationClass="com.samos.jasperreports.intellij.inspections.JasperUnknownClassInspection"/>
+        <localInspection language="XML" shortName="JasperUnusedDeclaration"
+                         bundle="messages.JasperBundle" key="inspection.unused.name" groupKey="inspection.group"
+                         enabledByDefault="true" level="WEAK WARNING"
+                         implementationClass="com.samos.jasperreports.intellij.inspections.JasperUnusedDeclarationInspection"/>
 
         <notificationGroup id="JasperReports" displayType="BALLOON" key="notification.group"/>
     </extensions>

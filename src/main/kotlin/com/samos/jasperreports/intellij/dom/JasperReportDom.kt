@@ -48,6 +48,7 @@ interface JasperReport : DomElement {
     @SubTagList("import") fun getImports(): List<GenericDomValue<String>>
     @SubTagList("template") fun getTemplates(): List<GenericDomValue<String>>
     @SubTagList("style") fun getStyles(): List<Style>
+    @SubTagList("dataset") fun getDatasets(): List<Dataset>
     @SubTagList("parameter") fun getParameters(): List<Parameter>
     @SubTag("query") fun getQuery(): Query
     @SubTagList("field") fun getFields(): List<Field>
@@ -66,6 +67,17 @@ interface JasperReport : DomElement {
     @SubTag("lastPageFooter") fun getLastPageFooter(): Band
     @SubTag("summary") fun getSummary(): Band
     @SubTag("noData") fun getNoData(): Band
+}
+
+/** Sous-jeu de données (`<dataset name>` sous la racine), utilisé par les tables, listes, crosstabs et graphiques. */
+interface Dataset : DomElement {
+    @NameValue
+    @Attribute("name") fun getName(): GenericAttributeValue<String>
+    @SubTagList("parameter") fun getParameters(): List<Parameter>
+    @SubTag("query") fun getQuery(): Query
+    @SubTagList("field") fun getFields(): List<Field>
+    @SubTagList("variable") fun getVariables(): List<Variable>
+    @SubTagList("group") fun getGroups(): List<Group>
 }
 
 interface Style : DomElement {

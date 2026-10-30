@@ -39,6 +39,7 @@ dependencies {
     intellijPlatform {
         intellijIdea(providers.gradleProperty("platformVersion").get())
         bundledPlugin("com.intellij.java")
+        bundledPlugin("com.intellij.properties")
         testFramework(TestFrameworkType.Platform)
     }
     runnerJar(project(":runner"))
