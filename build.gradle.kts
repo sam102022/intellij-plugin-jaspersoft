@@ -57,6 +57,51 @@ intellijPlatform {
     pluginConfiguration {
         name = providers.gradleProperty("pluginName")
         version = providers.gradleProperty("pluginVersion")
+        // Notes de version : section de CHANGELOG.md de la version publiée, convertie en HTML.
+        changeNotes = providers.gradleProperty("pluginVersion").zip(
+            providers.fileContents(layout.projectDirectory.file("CHANGELOG.md")).asText
+        ) { pluginVersion, changelog ->
+            val section = changelog.lines()
+                .dropWhile { !it.startsWith("## [$pluginVersion]") }
+                .drop(1)
+                .takeWhile { !it.startsWith("## ") && !it.startsWith("[") }
+            check(section.any { it.isNotBlank() }) { "CHANGELOG.md : aucune section pour la version $pluginVersion" }
+            fun inline(text: String) = text
+                .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                .replace(Regex("\\*\\*(.+?)\\*\\*"), "<b>$1</b>")
+                .replace(Regex("`(.+?)`"), "<code>$1</code>")
+            val html = StringBuilder()
+            var paragraph = ""
+            var inList = false
+            fun flush() {
+                if (paragraph.isNotEmpty()) {
+                    html.append(if (inList) "<li>${inline(paragraph)}</li>" else "<p>${inline(paragraph)}</p>")
+                    paragraph = ""
+                }
+            }
+            for (line in section) {
+                when {
+                    line.startsWith("### ") -> {
+                        flush()
+                        if (inList) { html.append("</ul>"); inList = false }
+                        html.append("<h3>${inline(line.removePrefix("### "))}</h3>")
+                    }
+                    line.startsWith("- ") -> {
+                        flush()
+                        if (!inList) { html.append("<ul>"); inList = true }
+                        paragraph = line.removePrefix("- ").trim()
+                    }
+                    line.isBlank() -> {
+                        flush()
+                        if (inList) { html.append("</ul>"); inList = false }
+                    }
+                    else -> paragraph = (paragraph + " " + line.trim()).trim()
+                }
+            }
+            flush()
+            if (inList) html.append("</ul>")
+            html.toString()
+        }
         ideaVersion {
             sinceBuild = providers.gradleProperty("pluginSinceBuild")
             untilBuild = provider { null }

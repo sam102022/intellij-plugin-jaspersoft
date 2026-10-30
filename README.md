@@ -3,7 +3,13 @@
 Éditeur avancé des rapports JasperReports 7 (`.jrxml`) dans IntelliJ IDEA 2026.1+ : arborescence,
 compilation avec la bibliothèque JasperReports du projet et aperçu page par page en images.
 
+Version actuelle : 1.0.0 (voir [CHANGELOG.md](CHANGELOG.md)).
+
 Spécification : https://claude.ai/artifact/WcjWLV7adppbVnjuZ3F4SV
+
+Publier une version : ajouter ses changements sous `## [Unreleased]` dans `CHANGELOG.md`, renommer la
+section en `## [x.y.z] - date`, mettre `pluginVersion = x.y.z` dans `gradle.properties` ; `buildPlugin`
+reprend la section comme notes de version du plugin (et échoue si elle manque).
 
 ## Prérequis
 
