@@ -97,11 +97,14 @@ object StudioAdapters {
 /** Entrée de la liste « Data Adapter » de l'aperçu. */
 sealed interface DataSourceChoice {
     val label: String
+    /** Identifiant mémorisé dans .idea/jasperreports.xml (EF-70). */
+    val key: String
     fun config(searchRoots: List<String>): DataSourceConfig
 
     /** Adaptateur déclaré par le rapport (`com.jaspersoft.studio.data.defaultdataadapter`). */
     data class ReportDefault(val declared: String, val adapter: StudioAdapter?) : DataSourceChoice {
         override val label get() = "Report default: " + (adapter?.let { "${it.name} (${it.kindLabel})" } ?: declared)
+        override val key get() = "default"
         override fun config(searchRoots: List<String>) = DataSourceConfig.Auto(searchRoots)
     }
 
@@ -109,17 +112,21 @@ sealed interface DataSourceChoice {
         override val label
             get() = "${adapter.name} (${adapter.kindLabel})" + if (showFileName) " — ${adapter.path.fileName}" else ""
         override fun config(searchRoots: List<String>) = DataSourceConfig.AdapterFile(adapter.path.toString(), searchRoots)
+        // Nom de fichier et nom de l'adaptateur, sans chemin absolu : la clé reste valable sur un autre poste.
+        override val key get() = "adapter:" + adapter.path.fileName + ":" + adapter.name
     }
 
     /** « One Empty Record » de Studio. */
     data object OneEmptyRecord : DataSourceChoice {
         override val label get() = "One Empty Record"
+        override val key get() = "empty"
         override fun config(searchRoots: List<String>) = DataSourceConfig.Empty(1)
     }
 
     /** « No Data Adapter » de Studio : aucun enregistrement. */
     data object NoData : DataSourceChoice {
         override val label get() = "No Data Adapter"
+        override val key get() = "none"
         override fun config(searchRoots: List<String>) = DataSourceConfig.Empty(0)
     }
 

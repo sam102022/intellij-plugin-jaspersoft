@@ -15,6 +15,8 @@ data class RunnerDiagnostic(
     val source: String?,
     /** Ligne de code Java de l'expression en erreur, si connue : sert à retrouver la balise (EF-51). */
     val code: String?,
+    /** Ligne du .jrxml signalée par le lecteur XML du moteur (élément d'une extension absente…). */
+    val line: Int? = null,
 )
 
 enum class RunStatus { OK, ERROR, CANCELLED }

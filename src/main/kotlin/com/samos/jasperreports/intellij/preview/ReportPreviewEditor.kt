@@ -19,9 +19,12 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.util.UserDataHolderBase
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.openapi.application.PathManager
+import com.intellij.openapi.fileEditor.OpenFileDescriptor
+import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.ui.HyperlinkLabel
 import com.intellij.ui.JBColor
 import com.intellij.ui.OnePixelSplitter
-import com.intellij.ui.SimpleListCellRenderer
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.panels.VerticalLayout
@@ -30,6 +33,7 @@ import com.intellij.util.concurrency.AppExecutorUtil
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import com.samos.jasperreports.intellij.JasperBundle
+import com.samos.jasperreports.intellij.diagnostics.EngineDiagnostics
 import com.samos.jasperreports.intellij.project.JasperModuleResolver
 import com.samos.jasperreports.intellij.project.ResolveResult
 import com.samos.jasperreports.intellij.runner.PageImage
@@ -70,11 +74,11 @@ class ReportPreviewEditor(private val project: Project, private val file: Virtua
         override fun getPreferredSize(): Dimension =
             super.getPreferredSize().apply { width = minOf(width, JBUI.scale(MAX_COMBO_WIDTH)) }
     }.apply {
-        renderer = SimpleListCellRenderer.create<DataSourceChoice>("") { it.label }
+        renderer = textRenderer<DataSourceChoice> { it.label }
         addItemListener { toolTipText = (selectedItem as? DataSourceChoice)?.label }
     }
     private val outputFormats = ComboBox(OutputFormat.entries.toTypedArray()).apply {
-        renderer = SimpleListCellRenderer.create<OutputFormat>("") { it.label }
+        renderer = textRenderer<OutputFormat> { it.label }
         // Un seul format pour l'instant : la liste montre où viendront PDF, HTML…
         isEnabled = OutputFormat.entries.size > 1
     }
@@ -92,6 +96,24 @@ class ReportPreviewEditor(private val project: Project, private val file: Virtua
     }
     private val root = JPanel(BorderLayout())
     private val reloadAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, this)
+    private val settings = PreviewSettings.getInstance(project)
+    private val saved = settings.get(file)
+    /** Vrai tant que la configuration mémorisée (paramètres, source) n'a pas été appliquée. */
+    private var restorePending = saved != null
+    /** Les valeurs mémorisées ne sont remises qu'une fois, à l'ouverture : ensuite la saisie de l'utilisateur prime. */
+    private var parametersRestored = saved == null
+
+    /** EF-61 : zoom (0 = ajuster à la largeur) et numéro de la page visible. */
+    private val zoomBox = ComboBox(ZOOM_LEVELS.toTypedArray()).apply {
+        renderer = textRenderer<Int> { if (it == 0) JasperBundle.message("preview.zoom.fit") else "$it %" }
+        selectedItem = saved?.zoom?.takeIf { it in ZOOM_LEVELS } ?: 0
+        addActionListener { applyZoom() }
+    }
+    private val pageLabel = JBLabel()
+    private val scrollPane = JBScrollPane(pages).apply { verticalScrollBar.unitIncrement = JBUI.scale(24) }
+    /** EF-64 : nombre de pages rendues ; augmenté par « Render all pages ». */
+    private var maxPages = baseOptions.maxPages
+    private var totalPages = 0
 
     @Volatile private var disposed = false
     @Volatile private var running = false
@@ -111,6 +133,7 @@ class ReportPreviewEditor(private val project: Project, private val file: Virtua
             add(group(JBLabel(JasperBundle.message("preview.dataSource.label")), dataSources))
             add(group(JBLabel(JasperBundle.message("preview.output.label")), outputFormats))
             add(group(toolbar.component))
+            add(group(JBLabel(JasperBundle.message("preview.zoom.label")), zoomBox, pageLabel))
         }
         val header = JPanel(BorderLayout()).apply {
             border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(4, 4, 0, 4))
@@ -119,7 +142,13 @@ class ReportPreviewEditor(private val project: Project, private val file: Virtua
         }
 
         splitter.firstComponent = parametersPanel
-        splitter.secondComponent = JBScrollPane(pages).apply { verticalScrollBar.unitIncrement = JBUI.scale(24) }
+        splitter.secondComponent = scrollPane
+        scrollPane.viewport.addChangeListener { updatePageLabel() }
+        scrollPane.viewport.addComponentListener(object : ComponentAdapter() {
+            override fun componentResized(e: ComponentEvent) {
+                if (zoomBox.selectedItem == 0) applyZoom()
+            }
+        })
         root.add(header, BorderLayout.NORTH)
         root.add(splitter, BorderLayout.CENTER)
         // Recalcule le nombre de lignes de la barre à chaque redimensionnement.
@@ -147,6 +176,10 @@ class ReportPreviewEditor(private val project: Project, private val file: Virtua
             .expireWith(this)
             .finishOnUiThread(ModalityState.any()) { info ->
                 parametersPanel.setParameters(info?.parameters.orEmpty())
+                if (!parametersRestored && info != null) {
+                    parametersPanel.restore(saved?.parameters.orEmpty())
+                    parametersRestored = true
+                }
                 if (rescanAdapters) {
                     scanAdapters(info?.declaredAdapter)
                 } else {
@@ -173,30 +206,38 @@ class ReportPreviewEditor(private val project: Project, private val file: Virtua
         val choices = DataSourceChoice.build(declared, adapters)
         val previous = dataSources.selectedItem as? DataSourceChoice
         dataSources.model = DefaultComboBoxModel(choices.toTypedArray())
-        dataSources.selectedItem = choices.firstOrNull { it == previous } ?: choices.first()
+        val remembered = if (restorePending) choices.firstOrNull { it.key == saved?.dataSource } else null
+        dataSources.selectedItem = remembered ?: choices.firstOrNull { it == previous } ?: choices.first()
+        // La liste complète (adaptateurs du module) est connue : la configuration mémorisée est appliquée.
+        if (adapters.isNotEmpty() || remembered != null) restorePending = false
     }
 
     /** Run (EF-60) : compilation, remplissage avec la source et les paramètres choisis, rendu page par page. */
-    fun run() {
+    fun run(pageLimit: Int = baseOptions.maxPages) {
         if (running) return
         running = true
+        maxPages = pageLimit
+        restorePending = false
+        saveSettings()
         FileDocumentManager.getInstance().getDocument(file)?.let(FileDocumentManager.getInstance()::saveDocument)
         clearPages()
         status.text = JasperBundle.message("preview.running")
         val choice = dataSources.selectedItem as? DataSourceChoice ?: DataSourceChoice.OneEmptyRecord
         val parameters = parametersPanel.values()
+        val missing = parametersPanel.missingValues()
 
         ApplicationManager.getApplication().executeOnPooledThread(Runnable {
             when (val resolved = JasperModuleResolver.resolve(project, file)) {
-                is ResolveResult.Error -> onUi { finish(null, IllegalStateException(resolved.message)) }
+                is ResolveResult.Error -> onUi { finish(null, IllegalStateException(resolved.message), missing) }
                 is ResolveResult.Ok -> {
                     val options = baseOptions.copy(
                         dataSource = choice.config(resolved.target.searchRoots),
                         parameters = parameters,
+                        maxPages = pageLimit,
                     )
                     ReportRunnerClient.getInstance(project)
                         .preview(resolved.target, options) { page -> onUi { addPage(page) } }
-                        .whenComplete { result, error -> onUi { finish(result, error) } }
+                        .whenComplete { result, error -> onUi { finish(result, error, missing) } }
                 }
             }
         })
@@ -212,7 +253,44 @@ class ReportPreviewEditor(private val project: Project, private val file: Virtua
         reload(rescanAdapters = true)
     }
 
+    private fun saveSettings() {
+        settings.save(file, parametersPanel.rawValues(), (dataSources.selectedItem as? DataSourceChoice)?.key, zoomBox.selectedItem as? Int ?: 0)
+    }
+
+    /** Facteur d'affichage : pourcentage choisi, ou largeur de la vue divisée par celle de la page la plus large. */
+    private fun zoomFactor(): Double {
+        val percent = zoomBox.selectedItem as? Int ?: 0
+        if (percent > 0) return percent / 100.0
+        val widest = pageComponents().maxOfOrNull { it.logicalWidth } ?: return 1.0
+        val available = scrollPane.viewport.width - pages.insets.left - pages.insets.right
+        return if (available <= 0) 1.0 else (available.toDouble() / widest).coerceIn(0.1, 4.0)
+    }
+
+    private fun pageComponents() = pages.components.filterIsInstance<PageComponent>()
+
+    private fun applyZoom() {
+        val factor = zoomFactor()
+        pageComponents().forEach { it.zoom = factor }
+        pages.revalidate()
+        pages.repaint()
+        updatePageLabel()
+    }
+
+    /** « Page n / N » : première page visible dans la vue. */
+    private fun updatePageLabel() {
+        val pageList = pageComponents()
+        if (pageList.isEmpty()) {
+            pageLabel.text = ""
+            return
+        }
+        val top = scrollPane.viewport.viewRect.y
+        val index = pageList.indexOfFirst { it.y + it.height > top }.coerceAtLeast(0)
+        pageLabel.text = JasperBundle.message("preview.page", index + 1, maxOf(totalPages, pageList.size))
+    }
+
     private fun clearPages() {
+        totalPages = 0
+        pageLabel.text = ""
         pages.removeAll()
         pages.revalidate()
         pages.repaint()
@@ -220,23 +298,44 @@ class ReportPreviewEditor(private val project: Project, private val file: Virtua
 
     private fun addPage(page: PageImage) {
         val size = PageComponent.imageSize(page.image) ?: return
-        pages.add(PageComponent(page.image, size, baseOptions.scale))
+        totalPages = maxOf(totalPages, page.total)
+        pages.add(PageComponent(page.image, size, baseOptions.scale).also { it.zoom = zoomFactor() })
+        // Le premier ajout donne la largeur de page : l'ajustement à la largeur se recalcule.
+        if (zoomBox.selectedItem == 0 && pageComponents().size == 1) applyZoom()
         pages.revalidate()
         pages.repaint()
+        updatePageLabel()
     }
 
-    private fun finish(result: RunnerResult?, error: Throwable?) {
+    private fun finish(result: RunnerResult?, error: Throwable?, missing: List<String>) {
         running = false
+        // EF-50 : les erreurs de l'aperçu vont aussi dans l'éditeur.
+        result?.let { EngineDiagnostics.getInstance(project).set(file, it.diagnostics) }
+        result?.let { totalPages = it.pages }
+        updatePageLabel()
         status.text = when {
             error != null -> JasperBundle.message("preview.failed") + " : " + (error.cause?.message ?: error.message)
             result == null -> JasperBundle.message("preview.failed")
             result.status == RunStatus.CANCELLED -> JasperBundle.message("preview.cancelled")
             result.status == RunStatus.ERROR -> JasperBundle.message("preview.failed") + " : " +
                 result.errors.firstOrNull()?.let { it.code ?: it.message }.orEmpty()
-            result.pages > baseOptions.maxPages -> JasperBundle.message("preview.truncated", baseOptions.maxPages, result.pages)
+            result.pages > maxPages -> JasperBundle.message("preview.truncated", maxPages, result.pages)
             else -> JasperBundle.message("preview.done", result.pages)
         } + (result?.dataSource?.let { " · " + JasperBundle.message("preview.dataSource", it) } ?: "")
         status.toolTipText = status.text
+        var row = 0
+        // EF-75 : paramètres sans valeur ni défaut, qui valent null pendant le remplissage.
+        if (missing.isNotEmpty() && (error != null || result?.status != RunStatus.OK)) {
+            pages.add(note(JasperBundle.message("preview.params.missing", missing.joinToString(", "))), row++)
+        }
+        // EF-64 : rendre toutes les pages au-delà de la limite.
+        if (result != null && result.status == RunStatus.OK && result.pages > maxPages) {
+            pages.add(link(JasperBundle.message("preview.renderAll", result.pages)) { run(result.pages) }, row++)
+        }
+        // EF-66 : journal complet du runner (sortie d'erreur du moteur, piles d'appels).
+        if (error != null || result?.status == RunStatus.ERROR) {
+            pages.add(link(JasperBundle.message("preview.showLog")) { openLog() }, row++)
+        }
         // EF-66 : diagnostics et avertissements (adaptateur introuvable…) au-dessus des pages.
         if (result != null && result.diagnostics.isNotEmpty()) {
             result.diagnostics.forEachIndexed { index, d ->
@@ -246,10 +345,26 @@ class ReportPreviewEditor(private val project: Project, private val file: Virtua
                     setAllowAutoWrapping(true)
                     setCopyable(true)
                 }
-                pages.add(label, index)
+                pages.add(label, row + index)
             }
             pages.revalidate()
         }
+    }
+
+    private fun note(text: String) = JBLabel("<html>${escape(text)}</html>").apply {
+        setAllowAutoWrapping(true)
+        foreground = UIUtil.getContextHelpForeground()
+    }
+
+    private fun link(text: String, action: () -> Unit) = HyperlinkLabel(text).apply {
+        addHyperlinkListener { action() }
+    }
+
+    /** Le runner écrit sa sortie d'erreur dans le journal de l'IDE (lignes « [runner] »). */
+    private fun openLog() {
+        val log = Path.of(PathManager.getLogPath(), "idea.log")
+        val virtual = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(log) ?: return
+        OpenFileDescriptor(project, virtual, virtual.length.toInt().coerceAtLeast(0)).navigate(true)
     }
 
     private fun onUi(block: () -> Unit) =
@@ -306,9 +421,19 @@ class ReportPreviewEditor(private val project: Project, private val file: Virtua
      */
     private class PageComponent(private val file: Path, imageSize: Dimension, scale: Float) : JComponent() {
         private var cached = SoftReference<BufferedImage>(null)
+        /** Taille de la page à 100 % (taille du rapport en points). */
+        val logicalWidth = imageSize.width / scale
+        private val logicalHeight = imageSize.height / scale
+
+        /** EF-61 : facteur d'affichage appliqué à la taille logique. */
+        var zoom: Double = 1.0
+            set(value) {
+                field = value
+                preferredSize = Dimension((logicalWidth * value).toInt(), (logicalHeight * value).toInt())
+            }
 
         init {
-            preferredSize = Dimension((imageSize.width / scale).toInt(), (imageSize.height / scale).toInt())
+            zoom = 1.0
         }
 
         private fun image(): BufferedImage? =
@@ -345,6 +470,8 @@ class ReportPreviewEditor(private val project: Project, private val file: Virtua
 
     private companion object {
         const val MAX_COMBO_WIDTH = 320
+        /** 0 = ajuster à la largeur. */
+        val ZOOM_LEVELS = listOf(0, 50, 75, 100, 125, 150, 200)
     }
 
     override fun getComponent(): JComponent = root
@@ -357,6 +484,7 @@ class ReportPreviewEditor(private val project: Project, private val file: Virtua
     override fun addPropertyChangeListener(listener: PropertyChangeListener) = Unit
     override fun removePropertyChangeListener(listener: PropertyChangeListener) = Unit
     override fun dispose() {
+        if (!restorePending) saveSettings()
         disposed = true
     }
 }

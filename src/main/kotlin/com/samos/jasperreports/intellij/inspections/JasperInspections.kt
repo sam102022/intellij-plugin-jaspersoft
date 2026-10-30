@@ -16,15 +16,17 @@ import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.psi.xml.XmlAttributeValue
 import com.intellij.psi.xml.XmlFile
 import com.intellij.psi.xml.XmlTag
-import com.intellij.psi.xml.XmlText
 import com.intellij.xml.util.XmlTagUtil
 import com.samos.jasperreports.intellij.JasperBundle
 import com.samos.jasperreports.intellij.references.JasperAttributeReference
+import com.samos.jasperreports.intellij.references.JasperSubreportReference
 import com.samos.jasperreports.intellij.references.JasperSymbolReference
+import com.samos.jasperreports.intellij.references.SubreportFiles
 import com.samos.jasperreports.intellij.references.JrxmlSymbols
 import com.samos.jasperreports.intellij.references.PsiTagNode
 import com.samos.jasperreports.intellij.references.ResourceBundles
 import com.samos.jasperreports.intellij.references.xmlTag
+import com.samos.jasperreports.intellij.symbols.ExpressionSyntax
 import com.samos.jasperreports.intellij.symbols.ReportChecks
 import com.samos.jasperreports.intellij.symbols.ReportSymbols
 import com.samos.jasperreports.intellij.symbols.Scope
@@ -49,25 +51,31 @@ abstract class JasperReportInspection : LocalInspectionTool() {
         return object : XmlElementVisitor() {
             override fun visitXmlTag(tag: XmlTag) {
                 if (tag.parentTag == null) checkReport(symbols, tag, holder)
+                checkTag(symbols, tag, holder)
             }
-
-            override fun visitXmlText(text: XmlText) = checkText(symbols, text, holder)
 
             override fun visitXmlAttributeValue(value: XmlAttributeValue) = checkAttributeValue(symbols, value, holder)
         }
     }
 
     protected open fun checkReport(symbols: ReportSymbols, root: XmlTag, holder: ProblemsHolder) {}
-    protected open fun checkText(symbols: ReportSymbols, text: XmlText, holder: ProblemsHolder) {}
+    protected open fun checkTag(symbols: ReportSymbols, tag: XmlTag, holder: ProblemsHolder) {}
     protected open fun checkAttributeValue(symbols: ReportSymbols, value: XmlAttributeValue, holder: ProblemsHolder) {}
 }
 
 /** EF-34, EF-40 : $F{} $P{} $V{} $R{}, style, groupe ou sous-jeu de données inconnus. */
 class JasperUnresolvedSymbolInspection : JasperReportInspection() {
 
-    override fun checkText(symbols: ReportSymbols, text: XmlText, holder: ProblemsHolder) {
-        val tag = text.parentTag ?: return
-        for (reference in text.references.filterIsInstance<JasperSymbolReference>()) {
+    override fun checkTag(symbols: ReportSymbols, tag: XmlTag, holder: ProblemsHolder) {
+        if (!ExpressionSyntax.isExpressionTag(tag.localName)) return
+        val references = tag.references
+        for (reference in references.filterIsInstance<JasperSubreportReference>()) {
+            if (reference.resolve() == null && SubreportFiles.findCompiled(holder.file, reference.baseName) == null) {
+                holder.registerProblemForReference(reference, ProblemHighlightType.WARNING,
+                    JasperBundle.message("inspection.unresolved.subreport", reference.baseName))
+            }
+        }
+        for (reference in references.filterIsInstance<JasperSymbolReference>()) {
             if (reference.kind == SymbolKind.RESOURCE) {
                 val bundle = symbols.resourceBundle ?: continue
                 if (ResourceBundles.files(holder.file, bundle).isEmpty()) continue

@@ -4,14 +4,12 @@ import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.intellij.execution.configurations.GeneralCommandLine
-import com.intellij.ide.plugins.PluginManagerCore
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.logger
-import com.intellij.openapi.extensions.PluginId
 import com.intellij.openapi.project.Project
 import com.samos.jasperreports.intellij.JasperBundle
 import com.samos.jasperreports.intellij.PLUGIN_ID
@@ -148,10 +146,13 @@ class ReportRunnerClient(private val project: Project) : Disposable {
     companion object {
         fun getInstance(project: Project): ReportRunnerClient = project.service()
 
-        /** Le JAR est livré dans `<plugin>/runner/`, hors du classpath du plugin (voir build.gradle.kts). */
+        /**
+         * Le JAR est livré dans `<plugin>/runner/`, hors du classpath du plugin (voir build.gradle.kts). Le dossier du
+         * plugin se déduit du JAR qui contient cette classe (`<plugin>/lib/x.jar`), sans API interne de la plateforme.
+         */
         fun expectedRunnerJar(): Path? =
-            PluginManagerCore.getPlugin(PluginId.getId(PLUGIN_ID))
-                ?.pluginPath
+            PathManager.getJarPathForClass(ReportRunnerClient::class.java)
+                ?.let { Path.of(it).parent?.parent }
                 ?.resolve("runner/jasper-runner.jar")
     }
 }
@@ -303,6 +304,7 @@ internal class RunnerProcess private constructor(val key: String, private val pr
                     message = d.get("message")?.asString.orEmpty(),
                     source = d.get("source")?.takeUnless { it.isJsonNull }?.asString,
                     code = d.get("code")?.takeUnless { it.isJsonNull }?.asString,
+                    line = d.get("line")?.takeUnless { it.isJsonNull }?.asInt,
                 )
             }.orEmpty()
             return RunnerResult(

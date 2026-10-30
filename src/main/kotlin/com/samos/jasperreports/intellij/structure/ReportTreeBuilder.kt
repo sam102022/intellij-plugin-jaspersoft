@@ -16,6 +16,9 @@ import com.samos.jasperreports.intellij.dom.Group
 import com.samos.jasperreports.intellij.dom.JasperReport
 import com.samos.jasperreports.intellij.dom.ReportElement
 import com.samos.jasperreports.intellij.dom.Section
+import com.samos.jasperreports.intellij.references.JrxmlSymbols
+import com.samos.jasperreports.intellij.references.xmlTag
+import com.samos.jasperreports.intellij.symbols.ReportChecks
 import javax.swing.Icon
 
 /** Nœud de l'arborescence (EF-10). Construit en lecture, hors du thread graphique. */
@@ -28,6 +31,8 @@ data class StructureNode(
     val range: TextRange?,
     val children: List<StructureNode> = emptyList(),
     val hasError: Boolean = false,
+    /** EF-17 : premier problème de la balise (inspections), affiché en infobulle. */
+    val problem: String? = null,
 ) {
     override fun toString(): String = label
 }
@@ -37,9 +42,39 @@ object ReportTreeBuilder {
 
     private const val EXPRESSION_PREVIEW = 40
 
+    /** Problèmes par balise, calculés une fois par construction (EF-17). */
+    private val problems = ThreadLocal<Map<XmlTag, String>>()
+
     fun build(file: XmlFile): StructureNode? {
         val report = DomManager.getDomManager(file.project).getFileElement(file, JasperReport::class.java)?.rootElement
             ?: return null
+        problems.set(collectProblems(file))
+        try {
+            return buildTree(file, report)
+        } finally {
+            problems.remove()
+        }
+    }
+
+    /**
+     * Doublons, débordements et symboles inconnus, rattachés à la balise qui les porte ; une expression en faute
+     * marque l'élément, la variable ou le groupe qui la contient.
+     */
+    private fun collectProblems(file: XmlFile): Map<XmlTag, String> {
+        val symbols = JrxmlSymbols.of(file) ?: return emptyMap()
+        val result = LinkedHashMap<XmlTag, String>()
+        (ReportChecks.duplicates(symbols) + ReportChecks.geometry(symbols)).forEach {
+            result.putIfAbsent(it.tag.xmlTag, JasperBundle.message(it.key, *it.args))
+        }
+        for ((tag, occurrences) in symbols.expressionOccurrences()) {
+            val unknown = occurrences.firstOrNull { symbols.isUnknown(it.kind, it.name, tag) } ?: continue
+            val owner = tag.xmlTag.parentTag ?: continue
+            result.putIfAbsent(owner, JasperBundle.message("inspection.unresolved.message", ReportChecks.kindLabel(unknown.kind), unknown.name))
+        }
+        return result
+    }
+
+    private fun buildTree(file: XmlFile, report: JasperReport): StructureNode? {
 
         val declarations = listOfNotNull(
             folder(JasperBundle.message("structure.imports"), report.getImports().map { leaf(it, it.stringValue.orEmpty(), null, AllIcons.Nodes.Package) }),
@@ -127,12 +162,14 @@ object ReportTreeBuilder {
     }
 
     private fun folder(label: String, children: List<StructureNode>): StructureNode? =
-        if (children.isEmpty()) null else StructureNode(label, children.size.toString(), AllIcons.Nodes.Folder, null, null, children)
+        if (children.isEmpty()) null else StructureNode(label, children.size.toString(), AllIcons.Nodes.Folder, null, null, children,
+            hasError = children.any { it.hasError })
 
     private fun leaf(dom: DomElement, label: String, detail: String?, icon: Icon) = node(dom, label, detail, icon, emptyList())
 
     private fun node(dom: DomElement, label: String, detail: String?, icon: Icon?, children: List<StructureNode>, hasError: Boolean = false): StructureNode {
         val tag = dom.xmlTag
+        val problem = tag?.let { problems.get()?.get(it) }
         return StructureNode(
             label = label,
             detail = detail,
@@ -140,7 +177,9 @@ object ReportTreeBuilder {
             pointer = tag?.let { SmartPointerManager.createPointer(it) },
             range = tag?.textRange,
             children = children,
-            hasError = hasError,
+            // Un nœud replié signale aussi les problèmes de ses descendants.
+            hasError = hasError || problem != null || children.any { it.hasError },
+            problem = problem ?: if (hasError) JasperBundle.message("structure.unknownKind") else null,
         )
     }
 

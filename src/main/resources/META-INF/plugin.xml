@@ -1,5 +1,5 @@
 <idea-plugin>
-    <id>com.samos.jasperreports.intellij</id>
+    <id>com.samos.jasperreports.editor</id>
     <name>JasperReports Editor</name>
     <vendor>samos</vendor>
 
@@ -50,7 +50,19 @@
                                   implementation="com.samos.jasperreports.intellij.references.JasperReferenceContributor"/>
         <completion.contributor language="XML" order="first"
                                 implementationClass="com.samos.jasperreports.intellij.completion.JasperCompletionContributor"/>
+        <completion.contributor language="JAVA" order="first"
+                                implementationClass="com.samos.jasperreports.intellij.completion.JasperCompletionContributor"/>
         <typedHandler implementation="com.samos.jasperreports.intellij.completion.JasperTypedHandler"/>
+
+        <!-- EF-30, EF-37, EF-39 : expressions en Java, requêtes en SQL (si le langage SQL est disponible) -->
+        <multiHostInjector implementation="com.samos.jasperreports.intellij.injection.JasperInjector"/>
+        <!-- EF-50, EF-51 : diagnostics du moteur dans l'éditeur (et l'onglet du fichier de la fenêtre Problems) -->
+        <annotator language="XML" implementationClass="com.samos.jasperreports.intellij.diagnostics.EngineDiagnosticsAnnotator"/>
+        <!-- EF-49 -->
+        <applicationConfigurable parentId="tools" id="com.samos.jasperreports.settings" key="settings.title" bundle="messages.JasperBundle"
+                                 instance="com.samos.jasperreports.intellij.diagnostics.JasperSettingsConfigurable"/>
+        <annotator language="JAVA" implementationClass="com.samos.jasperreports.intellij.injection.JasperExpressionAnnotator"/>
+        <daemon.highlightInfoFilter implementation="com.samos.jasperreports.intellij.injection.JasperFunctionCallFilter"/>
 
         <!-- Section 8 : inspections -->
         <localInspection language="XML" shortName="JasperUnresolvedSymbol"
@@ -85,10 +97,23 @@
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
             <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
         </action>
+        <!-- EF-48 -->
+        <action id="JasperReports.CompileAllReports"
+                class="com.samos.jasperreports.intellij.actions.CompileAllReportsAction"
+                icon="AllIcons.Actions.Compile">
+            <add-to-group group-id="BuildMenu" anchor="last"/>
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
+        </action>
         <!-- EF-07 -->
         <action id="JasperReports.NewReport"
                 class="com.samos.jasperreports.intellij.actions.NewReportAction">
             <add-to-group group-id="NewGroup" anchor="last"/>
         </action>
     </actions>
+
+    <applicationListeners>
+        <!-- EF-49 : compilation à l'enregistrement (désactivée par défaut) -->
+        <listener class="com.samos.jasperreports.intellij.diagnostics.CompileOnSaveListener"
+                  topic="com.intellij.openapi.fileEditor.FileDocumentManagerListener"/>
+    </applicationListeners>
 </idea-plugin>

@@ -15,7 +15,10 @@ Spécification : https://claude.ai/artifact/WcjWLV7adppbVnjuZ3F4SV
 
 ```bash
 ./gradlew runIde        # lance un IntelliJ de test avec le plugin
-./gradlew test          # tests de détection du format (voir ci-dessous)
+./gradlew test          # tests du plugin : format, symboles, références, inspections (voir ci-dessous)
+./gradlew :runner:test  # tests du moteur d'aperçu avec le vrai JasperReports 7.0.8
+                        # (rapport : runner/build/reports/runner/samples-compile.txt)
+./gradlew :runner:test -PjasperVersion=7.1.0   # mêmes tests avec JasperReports 7.1.0
 ./gradlew buildPlugin   # archive ZIP installable dans build/distributions/
 ./gradlew verifyPlugin  # Plugin Verifier (ENF-08)
 ```
@@ -39,34 +42,42 @@ Les dossiers absents sont ignorés ; l'ancien format est testé avec des exemple
 | `src/main/kotlin/.../preview` | Éditeur composé XML + aperçu PNG (EF-03, EF-60 à EF-67) |
 | `src/main/kotlin/.../project` | JDK, classpath et version JasperReports du module (section 10.3) |
 | `src/main/kotlin/.../runner` | Client du runner et protocole JSON (section 10.4) |
+| `src/main/kotlin/.../symbols` | Déclarations, portées et occurrences `$F{}` `$P{}` `$V{}` `$R{}`, vérifications, sans IntelliJ (section 7 et 8) |
+| `src/main/kotlin/.../references` | Références, navigation, renommage, bundles `$R{}`, sous-rapports (EF-31 à EF-36, EF-38) |
+| `src/main/kotlin/.../completion` | Complétion après `$F{` `$P{` `$V{` `$R{` (EF-32) |
+| `src/main/kotlin/.../injection` | Expressions en Java, requêtes en SQL (EF-30, EF-37, EF-39) |
+| `src/main/kotlin/.../inspections` | Inspections JasperReports (EF-40 à EF-45) |
+| `src/main/kotlin/.../properties` | Panneau de propriétés : schéma, lecture / écriture du XML, interface (EF-20 à EF-28) |
+| `src/main/kotlin/.../diagnostics` | Diagnostics du moteur dans l'éditeur, compilation à l'enregistrement (EF-49 à EF-51) |
 | `src/main/kotlin/.../actions` | Compile Report (EF-47), New > JasperReports Report (EF-07) |
 | `runner/` | Programme Java lancé dans une JVM séparée avec le classpath du module |
 
 Le JAR du runner est copié dans `<plugin>/runner/jasper-runner.jar`, hors du classpath de l'IDE : le moteur
 JasperReports, les pilotes JDBC et les classes du projet ne sont jamais chargés dans IntelliJ (ENF-04).
 
-## État d'avancement (sprint 0)
+## État d'avancement
 
 Fait :
 - reconnaissance des `.jrxml`, détection du format 6 avec bandeau ;
 - modèle DOM des déclarations, sections, bandes et éléments ;
 - arborescence avec navigation dans les deux sens, filtre par saisie, reconstruction après modification ;
-- compilation et aperçu PNG via le runner, avec compilation à la volée des sous-rapports référencés
-  par un chemin littéral (`"sub.jasper"`).
+- compilation et aperçu PNG via le runner (adaptateurs Studio, paramètres, sous-rapports compilés à la volée) ;
+- références `$F{}` `$P{}` `$V{}` `$R{}` (navigation, Find Usages, renommage, complétion), styles, groupes,
+  sous-jeux de données et sous-rapports `"x.jasper"` ;
+- expressions éditées comme du Java (complétion, erreurs), requêtes SQL injectées si le langage SQL existe ;
+- inspections : symbole inconnu (avec création), doublon, débordement de bande, classe introuvable,
+  déclaration inutilisée ;
+- panneau de propriétés par catégorie, valeurs par défaut en gris, validation, propriétés personnalisées,
+  attributs inconnus, sélection multiple ;
+- aperçu : réglages mémorisés dans `.idea/jasperreports.xml`, zoom, numéro de page, rendu au-delà de 50 pages ;
+- arborescence : ajouter, supprimer (avec liste des usages), dupliquer, monter / descendre, nœuds en erreur ;
+- erreurs du moteur dans l'éditeur et la fenêtre Problems, Compile All Reports (menu Build), compilation à
+  l'enregistrement (Settings › Tools › JasperReports) ;
+- Plugin Verifier : compatible avec IntelliJ 2026.1, 2026.2 et 2026.3 (EAP).
 
-À faire :
-- panneau de propriétés (sprint 3) ;
-- références `$F{}`, `$P{}`, `$V{}`, `$R{}`, injection Java et inspections ;
-- diagnostics dans la fenêtre Problems ;
-- configuration des données de test et des paramètres (l'aperçu utilise pour l'instant une source vide
-  d'un enregistrement).
+À faire : sources CSV / JSON / JDBC configurées dans le plugin, complétion dans le panneau de propriétés.
 
-## Points à vérifier au premier build
-
-Ce squelette a été écrit sans accès aux dépôts JetBrains : le runner a été compilé contre les signatures
-de JasperReports 7.1.0, et la détection de format testée sur les 30 rapports, mais le plugin Kotlin n'a pas
-encore été compilé contre le SDK IntelliJ 2026.1. Corriger d'éventuelles API dépréciées au premier
-`./gradlew build`.
+## Points à vérifier
 
 Le module doit être compilé (`mvn compile` ou Build Project) avant l'aperçu : les expressions des rapports
 utilisent les classes du projet (par exemple `com.samos.api.territory.functions.*`).

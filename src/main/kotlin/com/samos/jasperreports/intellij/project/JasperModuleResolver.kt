@@ -1,6 +1,6 @@
 package com.samos.jasperreports.intellij.project
 
-import com.intellij.openapi.application.runReadAction
+import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.module.ModuleUtilCore
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.projectRoots.JavaSdk
@@ -97,7 +97,7 @@ object JasperModuleResolver {
     private val MIN_JDK = JavaSdkVersion.JDK_17
 
     /** Racines du module du fichier et du projet (recherche des adaptateurs Studio), même sans JDK valide. */
-    fun searchRoots(project: Project, file: VirtualFile): List<String> = runReadAction {
+    fun searchRoots(project: Project, file: VirtualFile): List<String> = ReadAction.computeBlocking<List<String>, RuntimeException> {
         val module = ModuleUtilCore.findModuleForFile(file, project)
         val roots = module?.let { ModuleRootManager.getInstance(it).contentRoots.map { root -> root.path } }.orEmpty()
         (roots + listOfNotNull(project.basePath)).distinct()
@@ -110,22 +110,22 @@ object JasperModuleResolver {
         }
 
     /** Partie qui lit le modèle de l'IDE, en action de lecture ; l'empreinte du classpath est calculée hors lecture. */
-    private fun resolveModel(project: Project, file: VirtualFile): ResolveResult = runReadAction {
+    private fun resolveModel(project: Project, file: VirtualFile): ResolveResult = ReadAction.computeBlocking<ResolveResult, RuntimeException> {
         val module = ModuleUtilCore.findModuleForFile(file, project)
-            ?: return@runReadAction ResolveResult.Error(JasperBundle.message("runner.error.noModule"))
+            ?: return@computeBlocking ResolveResult.Error(JasperBundle.message("runner.error.noModule"))
 
         val sdk = ModuleRootManager.getInstance(module).sdk ?: ProjectRootManager.getInstance(project).projectSdk
-            ?: return@runReadAction ResolveResult.Error(JasperBundle.message("runner.error.noSdk"))
+            ?: return@computeBlocking ResolveResult.Error(JasperBundle.message("runner.error.noSdk"))
         val sdkType = sdk.sdkType as? JavaSdkType
-            ?: return@runReadAction ResolveResult.Error(JasperBundle.message("runner.error.notJava"))
+            ?: return@computeBlocking ResolveResult.Error(JasperBundle.message("runner.error.notJava"))
         val jdkVersion = JavaSdk.getInstance().getVersion(sdk)
         if (jdkVersion == null || !jdkVersion.isAtLeast(MIN_JDK)) {
-            return@runReadAction ResolveResult.Error(
+            return@computeBlocking ResolveResult.Error(
                 JasperBundle.message("runner.error.jdkTooOld", sdk.versionString ?: sdk.name)
             )
         }
         val java = sdkType.getVMExecutablePath(sdk)
-            ?: return@runReadAction ResolveResult.Error(JasperBundle.message("runner.error.noSdk"))
+            ?: return@computeBlocking ResolveResult.Error(JasperBundle.message("runner.error.noSdk"))
 
         val classpath = OrderEnumerator.orderEntries(module)
             .withoutSdk()
@@ -136,9 +136,9 @@ object JasperModuleResolver {
             .pathList
 
         val jasper = classpath.firstNotNullOfOrNull { JasperVersion.fromJarName(File(it).name) }
-            ?: return@runReadAction ResolveResult.Error(JasperBundle.message("runner.error.noJasper"))
+            ?: return@computeBlocking ResolveResult.Error(JasperBundle.message("runner.error.noJasper"))
         if (jasper.major != 7) {
-            return@runReadAction ResolveResult.Error(JasperBundle.message("runner.error.notV7", jasper.toString()))
+            return@computeBlocking ResolveResult.Error(JasperBundle.message("runner.error.notV7", jasper.toString()))
         }
 
         ResolveResult.Ok(RunTarget(module.name, Path.of(java), classpath, jasper, Path.of(file.path), searchRoots(project, file)))

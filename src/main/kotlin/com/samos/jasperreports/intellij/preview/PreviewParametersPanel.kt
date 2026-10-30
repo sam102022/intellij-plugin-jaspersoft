@@ -5,7 +5,6 @@ import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.PsiManager
 import com.intellij.psi.xml.XmlFile
-import com.intellij.ui.SimpleListCellRenderer
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTabbedPane
@@ -86,7 +85,7 @@ class PreviewParametersPanel : JPanel(BorderLayout()) {
     private class ChoiceField(values: List<String>, editable: Boolean, defaultLabel: String) : Field {
         private val combo = ComboBox((listOf("") + values).toTypedArray()).apply {
             isEditable = editable
-            renderer = SimpleListCellRenderer.create<String>(defaultLabel) { it.ifEmpty { defaultLabel } }
+            renderer = textRenderer<String>(defaultLabel) { it.ifEmpty { defaultLabel } }
         }
         override val component: JComponent get() = combo
         override fun text(): String? =
@@ -162,6 +161,21 @@ class PreviewParametersPanel : JPanel(BorderLayout()) {
             row.field?.text()?.let { row.name to ParameterValue(row.type, it) }
         }.toMap()
 
+    /** Texte saisi dans chaque champ, par nom de paramètre (pour mémoriser la configuration, EF-70). */
+    fun rawValues(): Map<String, String> =
+        (inputRows + reportRows).mapNotNull { row -> row.field?.text()?.let { row.name to it } }.toMap()
+
+    /** Remet les valeurs mémorisées dans les champs des paramètres présents. */
+    fun restore(values: Map<String, String>) {
+        (inputRows + reportRows).forEach { row -> values[row.name]?.let { row.field?.setText(it) } }
+    }
+
+    /** EF-75 : paramètres saisissables laissés vides et sans valeur par défaut (ils vaudront null). */
+    fun missingValues(): List<String> {
+        val filled = rawValues().keys
+        return parameters.filter { it.prompting && it.defaultExpression == null && it.name !in filled }.map { it.name }
+    }
+
     /** Reset : tous les champs reviennent à « valeur par défaut ». */
     fun reset() {
         (inputRows + reportRows).forEach { it.field?.setText(null) }
@@ -198,7 +212,8 @@ class PreviewParametersPanel : JPanel(BorderLayout()) {
             .addLabeledComponent(JBLabel("REPORT_TIME_ZONE"), timeZone.component, LABEL_ON_TOP)
             .addLabeledComponent(JBLabel("REPORT_MAX_COUNT"), maxCount.component, LABEL_ON_TOP)
             .addLabeledComponent(JBLabel("IS_IGNORE_PAGINATION"), ignorePagination.component, LABEL_ON_TOP)
-            .addComponent(JBLabel(JasperBundle.message("preview.params.locale.tip")).apply {
+            .addComponent(JBLabel("<html>" + JasperBundle.message("preview.params.locale.tip") + "</html>").apply {
+                setAllowAutoWrapping(true)
                 foreground = UIUtil.getContextHelpForeground()
                 border = JBUI.Borders.emptyTop(8)
             })

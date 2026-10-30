@@ -3,18 +3,24 @@ package com.samos.jasperreports.intellij.references
 import com.intellij.codeInsight.lookup.LookupElementBuilder
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.util.TextRange
-import com.intellij.patterns.PlatformPatterns
 import com.intellij.patterns.XmlPatterns
 import com.intellij.pom.references.PomService
+import com.intellij.openapi.module.ModuleUtilCore
 import com.intellij.psi.PsiElement
+import com.intellij.psi.PsiFile
+import com.intellij.psi.PsiManager
+import com.intellij.psi.search.FilenameIndex
+import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.PsiReference
 import com.intellij.psi.PsiReferenceBase
 import com.intellij.psi.PsiReferenceContributor
 import com.intellij.psi.PsiReferenceProvider
 import com.intellij.psi.PsiReferenceRegistrar
 import com.intellij.psi.XmlElementFactory
+import com.intellij.psi.impl.source.tree.LeafPsiElement
 import com.intellij.psi.xml.XmlAttribute
 import com.intellij.psi.xml.XmlAttributeValue
+import com.intellij.psi.xml.XmlTag
 import com.intellij.psi.xml.XmlText
 import com.intellij.util.ProcessingContext
 import com.intellij.util.xml.DomManager
@@ -50,31 +56,93 @@ fun symbolIcon(kind: SymbolKind): Icon = when (kind) {
     SymbolKind.DATASET -> AllIcons.Nodes.DataTables
 }
 
-/** `$F{nom}` dans le texte d'une balise d'expression ; [rangeInElement] couvre le seul nom. */
-class JasperSymbolReference(text: XmlText, range: TextRange, val kind: SymbolKind, val name: String) :
-    PsiReferenceBase<XmlText>(text, range, true) {
+/**
+ * `$F{nom}` dans le texte d'une balise d'expression. La référence est portée par la balise (XmlText ne consulte
+ * pas les fournisseurs de références) ; [rangeInElement] couvre le seul nom, dans le texte de la balise.
+ */
+class JasperSymbolReference(tag: XmlTag, range: TextRange, val kind: SymbolKind, val name: String) :
+    PsiReferenceBase<XmlTag>(tag, range, true) {
 
     override fun resolve(): PsiElement? {
         val file = element.containingFile
         val symbols = JrxmlSymbols.of(file) ?: return null
         if (kind == SymbolKind.RESOURCE) return ResourceBundles.findProperty(file, symbols.resourceBundle, name)
-        val tag = element.parentTag ?: return null
-        return symbols.resolve(kind, name, PsiTagNode(tag))?.let(::declarationTarget)
+        return symbols.resolve(kind, name, PsiTagNode(element))?.let(::declarationTarget)
     }
 
     /** La complétion passe par JasperCompletionContributor, qui marche aussi avant la fermeture de l'accolade. */
     override fun getVariants(): Array<Any> = emptyArray()
 
-    /**
-     * Le manipulateur standard de XmlText travaille sur le texte affiché et perdrait la section CDATA : on
-     * reconstruit le texte physique et on remplace le nœud.
-     */
-    override fun handleElementRename(newElementName: String): PsiElement {
-        val old = element.text
-        val updated = old.substring(0, rangeInElement.startOffset) + newElementName + old.substring(rangeInElement.endOffset)
-        val holder = XmlElementFactory.getInstance(element.project).createTagFromText("<e>$updated</e>")
-        val replacement = holder.value.textElements.firstOrNull() ?: return element
-        return element.replace(replacement)
+    override fun handleElementRename(newElementName: String): PsiElement = replaceInTag(element, rangeInElement, newElementName)
+}
+
+/** Remplace une portion du texte d'une balise, dans le XmlText qui la contient. */
+fun replaceInTag(tag: XmlTag, range: TextRange, replacement: String): PsiElement {
+    val tagStart = tag.textRange.startOffset
+    for (text in tag.value.textElements) {
+        val textRange = text.textRange.shiftLeft(tagStart)
+        if (textRange.contains(range)) {
+            replaceInText(text, range.shiftLeft(textRange.startOffset), replacement)
+            return tag
+        }
+    }
+    return tag
+}
+
+/**
+ * Remplace une portion du texte physique d'un XmlText. Le manipulateur standard travaille sur le texte affiché
+ * et perdrait la section CDATA : on reconstruit le texte et on remplace le nœud.
+ */
+fun replaceInText(text: XmlText, range: TextRange, replacement: String): PsiElement {
+    // Cas courant : le nom est dans un seul jeton (contenu CDATA ou texte) ; on remplace ce jeton tel quel, sans
+    // reformatage, ce qui garde la section CDATA et la mise en page de l'expression.
+    val leaf = text.findElementAt(range.startOffset)
+    if (leaf is LeafPsiElement) {
+        val leafRange = leaf.textRange.shiftLeft(text.textRange.startOffset)
+        if (leafRange.contains(range)) {
+            val old = leaf.text
+            val start = range.startOffset - leafRange.startOffset
+            leaf.replaceWithText(old.substring(0, start) + replacement + old.substring(start + range.length))
+            return text
+        }
+    }
+    val old = text.text
+    val updated = old.substring(0, range.startOffset) + replacement + old.substring(range.endOffset)
+    val holder = XmlElementFactory.getInstance(text.project).createTagFromText("<e>$updated</e>")
+    val node = holder.value.textElements.firstOrNull() ?: return text
+    return text.replace(node)
+}
+
+/** EF-36 : `"Detail.jasper"` dans une expression désigne le .jrxml de même nom (à côté du rapport, puis dans le module). */
+class JasperSubreportReference(tag: XmlTag, range: TextRange, val baseName: String) :
+    PsiReferenceBase<XmlTag>(tag, range, true) {
+
+    override fun resolve(): PsiElement? = SubreportFiles.findSource(element.containingFile, baseName)
+
+    override fun getVariants(): Array<Any> = emptyArray()
+
+    /** Renommer Detail.jrxml en Summary.jrxml écrit "Summary.jasper". */
+    override fun handleElementRename(newElementName: String): PsiElement =
+        replaceInTag(element, rangeInElement, newElementName.removeSuffix(".jrxml").removeSuffix(".jasper"))
+
+    override fun bindToElement(target: PsiElement): PsiElement {
+        val file = target as? PsiFile ?: return element
+        return handleElementRename(file.name)
+    }
+}
+
+object SubreportFiles {
+    fun findSource(file: PsiFile, baseName: String): PsiFile? = find(file, "$baseName.jrxml")
+
+    fun findCompiled(file: PsiFile, baseName: String): PsiFile? = find(file, "$baseName.jasper")
+
+    private fun find(file: PsiFile, fileName: String): PsiFile? {
+        val origin = file.originalFile
+        val manager = PsiManager.getInstance(file.project)
+        origin.virtualFile?.parent?.findChild(fileName)?.let { found -> manager.findFile(found)?.let { return it } }
+        val module = ModuleUtilCore.findModuleForPsiElement(origin)
+        val scope = module?.let { GlobalSearchScope.moduleScope(it) } ?: GlobalSearchScope.projectScope(file.project)
+        return FilenameIndex.getVirtualFilesByName(fileName, scope).firstNotNullOfOrNull { manager.findFile(it) }
     }
 }
 
@@ -102,7 +170,7 @@ class JasperAttributeReference(value: XmlAttributeValue, val kind: SymbolKind) :
 class JasperReferenceContributor : PsiReferenceContributor() {
 
     override fun registerReferenceProviders(registrar: PsiReferenceRegistrar) {
-        registrar.registerReferenceProvider(PlatformPatterns.psiElement(XmlText::class.java), ExpressionReferenceProvider())
+        registrar.registerReferenceProvider(XmlPatterns.xmlTag(), ExpressionReferenceProvider())
         registrar.registerReferenceProvider(
             XmlPatterns.xmlAttributeValue().withLocalName(*ATTRIBUTE_KINDS.keys.toTypedArray()),
             AttributeReferenceProvider(),
@@ -111,13 +179,24 @@ class JasperReferenceContributor : PsiReferenceContributor() {
 
     private class ExpressionReferenceProvider : PsiReferenceProvider() {
         override fun getReferencesByElement(element: PsiElement, context: ProcessingContext): Array<PsiReference> {
-            val text = element as? XmlText ?: return PsiReference.EMPTY_ARRAY
-            val tag = text.parentTag ?: return PsiReference.EMPTY_ARRAY
+            val tag = element as? XmlTag ?: return PsiReference.EMPTY_ARRAY
             if (!ExpressionSyntax.isExpressionTag(tag.localName)) return PsiReference.EMPTY_ARRAY
-            if (JrxmlSymbols.of(text.containingFile) == null) return PsiReference.EMPTY_ARRAY
-            return ExpressionSyntax.occurrences(text.text).map {
-                JasperSymbolReference(text, TextRange(it.nameStart, it.nameEnd), it.kind, it.name)
-            }.toTypedArray()
+            if (JrxmlSymbols.of(tag.containingFile) == null) return PsiReference.EMPTY_ARRAY
+            val tagStart = tag.textRange.startOffset
+            val references = mutableListOf<PsiReference>()
+            for (text in tag.value.textElements) {
+                val base = text.textRange.startOffset - tagStart
+                val physical = text.text
+                ExpressionSyntax.occurrences(physical).forEach {
+                    references += JasperSymbolReference(tag, TextRange(base + it.nameStart, base + it.nameEnd), it.kind, it.name)
+                }
+                if (tag.localName != "query") {
+                    ExpressionSyntax.subreportLiterals(physical).forEach {
+                        references += JasperSubreportReference(tag, TextRange(base + it.baseStart, base + it.baseEnd), it.baseName)
+                    }
+                }
+            }
+            return references.toTypedArray()
         }
     }
 

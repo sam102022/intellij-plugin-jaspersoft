@@ -12,7 +12,8 @@ tasks.compileTestJava { options.release.set(17) }
 
 repositories { mavenCentral() }
 
-val jasperVersion = "7.0.8"
+// Version du moteur pour les tests : 7.0.8 par défaut, `-PjasperVersion=7.1.0` pour vérifier la migration.
+val jasperVersion = providers.gradleProperty("jasperVersion").getOrElse("7.0.8")
 
 dependencies {
     // Fournis à l'exécution par le classpath du module de l'utilisateur.

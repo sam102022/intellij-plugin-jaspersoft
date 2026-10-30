@@ -12,6 +12,11 @@ version = providers.gradleProperty("pluginVersion").get()
 
 kotlin {
     jvmToolchain(21)
+    // Pas de méthodes passerelles vers les méthodes par défaut des interfaces de la plateforme (ToolWindowFactory…) :
+    // le Plugin Verifier les comptait comme des usages d'API dépréciée ou expérimentale.
+    compilerOptions {
+        jvmDefault.set(org.jetbrains.kotlin.gradle.dsl.JvmDefaultMode.NO_COMPATIBILITY)
+    }
 }
 
 // JAR du module :runner, livré dans le dossier "runner/" du plugin, hors du classpath de l'IDE (ENF-04).
@@ -41,6 +46,7 @@ dependencies {
         bundledPlugin("com.intellij.java")
         bundledPlugin("com.intellij.properties")
         testFramework(TestFrameworkType.Platform)
+        testFramework(TestFrameworkType.Plugin.Java)
     }
     runnerJar(project(":runner"))
     testImplementation("junit:junit:4.13.2")
@@ -57,6 +63,8 @@ intellijPlatform {
         }
     }
     pluginVerification {
+        // Les dépendances sont toutes des plugins livrés avec l'IDE : inutile d'interroger la Marketplace.
+        freeArgs = listOf("-offline")
         ides {
             recommended()
         }

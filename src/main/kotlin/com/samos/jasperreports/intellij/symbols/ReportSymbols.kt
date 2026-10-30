@@ -31,7 +31,14 @@ enum class SymbolKind(val prefix: Char?, val tagName: String) {
 }
 
 /** `$F{name}` trouvé dans un texte ; [nameStart] et [nameEnd] délimitent le nom dans ce texte. */
-data class SymbolOccurrence(val kind: SymbolKind, val name: String, val nameStart: Int, val nameEnd: Int, val raw: Boolean = false)
+data class SymbolOccurrence(val kind: SymbolKind, val name: String, val nameStart: Int, val nameEnd: Int, val raw: Boolean = false) {
+    /** Début de l'occurrence complète (`${'$'}`) et fin après l'accolade fermante. */
+    val start: Int get() = nameStart - if (raw) 4 else 3
+    val end: Int get() = nameEnd + 1
+}
+
+/** Chemin littéral d'un sous-rapport compilé (`"sub/Detail.jasper"`) ; [baseStart]..[baseEnd] couvrent `Detail`. */
+data class SubreportLiteral(val baseName: String, val baseStart: Int, val baseEnd: Int, val literalStart: Int, val literalEnd: Int)
 
 object ExpressionSyntax {
     /** `$P!{x}` insère le paramètre tel quel dans la requête ; les noms peuvent contenir des espaces (colonnes CSV). */
@@ -47,6 +54,13 @@ object ExpressionSyntax {
         val group = match.groups[3]!!
         if (group.value.isBlank()) return@mapNotNull null
         SymbolOccurrence(kind, group.value, group.range.first, group.range.last + 1, raw)
+    }.toList()
+
+    private val SUBREPORT = Regex(""""(?:[^"\\]*/)?([^"\\/]+)\.jasper"""")
+
+    fun subreportLiterals(text: CharSequence): List<SubreportLiteral> = SUBREPORT.findAll(text).map {
+        val group = it.groups[1]!!
+        SubreportLiteral(group.value, group.range.first, group.range.last + 1, it.range.first, it.range.last + 1)
     }.toList()
 
     /** Balises dont le contenu est une expression Java ou une requête (qui accepte $P{} et $P!{}). */

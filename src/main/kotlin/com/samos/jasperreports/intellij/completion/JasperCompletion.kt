@@ -11,10 +11,12 @@ import com.intellij.codeInsight.completion.PrioritizedLookupElement
 import com.intellij.codeInsight.editorActions.TypedHandlerDelegate
 import com.intellij.codeInsight.lookup.LookupElement
 import com.intellij.codeInsight.lookup.LookupElementBuilder
+import com.intellij.lang.injection.InjectedLanguageManager
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.project.Project
 import com.intellij.patterns.PlatformPatterns
 import com.intellij.psi.PsiFile
+import com.intellij.psi.impl.source.tree.injected.InjectedLanguageEditorUtil
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.psi.xml.XmlText
 import com.intellij.util.ProcessingContext
@@ -28,7 +30,7 @@ import com.samos.jasperreports.intellij.symbols.SymbolKind
 /**
  * Complétion après `$F{`, `$P{`, `$P!{`, `$V{` et `$R{` (EF-32, EF-38) : déclarations visibles depuis l'expression
  * (sous-jeu de données d'une table, crosstab…), puis noms intégrés, avec leur classe. L'accolade fermante est
- * ajoutée si elle manque.
+ * ajoutée si elle manque. Enregistré pour XML et pour Java (expressions injectées, EF-30).
  */
 class JasperCompletionContributor : CompletionContributor() {
 
@@ -38,15 +40,19 @@ class JasperCompletionContributor : CompletionContributor() {
 
     private class Provider : CompletionProvider<CompletionParameters>() {
         override fun addCompletions(parameters: CompletionParameters, context: ProcessingContext, result: CompletionResultSet) {
-            val file = parameters.originalFile
+            // Dans une expression injectée en Java, on travaille sur le .jrxml hôte.
+            val injected = InjectedLanguageManager.getInstance(parameters.originalFile.project)
+            val file = injected.getTopLevelFile(parameters.originalFile) ?: return
             val symbols = JrxmlSymbols.of(file) ?: return
-            val offset = parameters.offset
+            val offset = injected.injectedToHost(parameters.originalFile, parameters.offset)
+            // Curseur dans une expression injectée : la passe Java s'en charge, ne pas proposer deux fois.
+            if (file == parameters.originalFile && injected.findInjectedElementAt(file, (offset - 1).coerceAtLeast(0)) != null) return
             val leaf = file.findElementAt((offset - 1).coerceAtLeast(0)) ?: return
             val text = PsiTreeUtil.getParentOfType(leaf, XmlText::class.java, false) ?: return
             val tag = text.parentTag ?: return
             if (!ExpressionSyntax.isExpressionTag(tag.localName)) return
 
-            val chars = parameters.editor.document.charsSequence
+            val chars = file.viewProvider.document?.charsSequence ?: return
             val before = chars.subSequence((offset - MAX_NAME).coerceAtLeast(0), offset)
             val match = ExpressionSyntax.PARTIAL.find(before) ?: return
             val kind = SymbolKind.ofPrefix(match.groupValues[1][0]) ?: return
@@ -77,13 +83,16 @@ class JasperCompletionContributor : CompletionContributor() {
     companion object {
         private const val MAX_NAME = 200
 
+        /** Ajoute `}` dans le document du .jrxml, même si la complétion a eu lieu dans l'expression injectée. */
         private val CLOSE_BRACE = InsertHandler<LookupElement> { context, _ ->
-            val document = context.document
-            val tail = context.tailOffset
+            val injected = InjectedLanguageManager.getInstance(context.project)
+            val editor = InjectedLanguageEditorUtil.getTopLevelEditor(context.editor)
+            val document = editor.document
+            val tail = injected.injectedToHost(context.file, context.tailOffset)
             if (tail >= document.textLength || document.charsSequence[tail] != '}') {
                 document.insertString(tail, "}")
             }
-            context.editor.caretModel.moveToOffset(tail + 1)
+            editor.caretModel.moveToOffset(tail + 1)
         }
     }
 }
@@ -91,10 +100,12 @@ class JasperCompletionContributor : CompletionContributor() {
 /** Ouvre la complétion dès l'accolade de `$F{` tapée. */
 class JasperTypedHandler : TypedHandlerDelegate() {
     override fun checkAutoPopup(charTyped: Char, project: Project, editor: Editor, file: PsiFile): Result {
-        if (charTyped != '{' || !file.name.endsWith(".jrxml", ignoreCase = true)) return Result.CONTINUE
+        if (charTyped != '{') return Result.CONTINUE
+        val top = InjectedLanguageManager.getInstance(project).getTopLevelFile(file) ?: file
+        if (!top.name.endsWith(".jrxml", ignoreCase = true)) return Result.CONTINUE
         val offset = editor.caretModel.offset
         val before = editor.document.charsSequence.subSequence((offset - 3).coerceAtLeast(0), offset)
-        if (TRIGGER.containsMatchIn(before) && JrxmlSymbols.of(file) != null) {
+        if (TRIGGER.containsMatchIn(before) && JrxmlSymbols.of(top) != null) {
             AutoPopupController.getInstance(project).scheduleAutoPopup(editor)
         }
         return Result.CONTINUE

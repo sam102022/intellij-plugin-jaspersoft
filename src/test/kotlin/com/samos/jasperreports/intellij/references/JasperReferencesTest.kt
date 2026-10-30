@@ -1,6 +1,12 @@
 package com.samos.jasperreports.intellij.references
 
-import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import com.intellij.codeInsight.lookup.Lookup
+import com.intellij.openapi.projectRoots.JavaSdk
+import com.intellij.psi.impl.source.tree.injected.InjectedLanguageEditorUtil
+import com.intellij.openapi.projectRoots.Sdk
+import com.intellij.testFramework.LightProjectDescriptor
+import com.intellij.testFramework.fixtures.DefaultLightProjectDescriptor
+import com.intellij.testFramework.fixtures.LightJavaCodeInsightFixtureTestCase
 import com.samos.jasperreports.intellij.inspections.JasperDuplicateDeclarationInspection
 import com.samos.jasperreports.intellij.inspections.JasperLayoutInspection
 import com.samos.jasperreports.intellij.inspections.JasperUnknownClassInspection
@@ -8,7 +14,21 @@ import com.samos.jasperreports.intellij.inspections.JasperUnresolvedSymbolInspec
 import com.samos.jasperreports.intellij.inspections.JasperUnusedDeclarationInspection
 
 /** Références, complétion, renommage et inspections dans un vrai éditeur IntelliJ (EF-31 à EF-35, EF-38, EF-40 à EF-45). */
-class JasperReferencesTest : BasePlatformTestCase() {
+/** Projet léger avec un JDK factice : les expressions injectées en Java ont besoin de java.lang.String. */
+class JasperReferencesTest : LightJavaCodeInsightFixtureTestCase() {
+
+    /**
+     * Même JDK factice que le descripteur par défaut, sans la bibliothèque org.jetbrains:annotations que celui-ci
+     * cherche dans le dépôt Maven local (~/.m2), absent en intégration continue.
+     */
+    override fun getProjectDescriptor(): LightProjectDescriptor = DESCRIPTOR
+
+    companion object {
+        /** JDK réel qui exécute les tests (le JDK factice de la plateforme n'est pas livré aux plugins). */
+        private val DESCRIPTOR = object : DefaultLightProjectDescriptor() {
+            override fun getSdk(): Sdk = JavaSdk.getInstance().createJdk("test-jdk", System.getProperty("java.home"), false)
+        }
+    }
 
     private fun report(body: String, attributes: String = "") = """
         <jasperReport name="r" pageWidth="595" pageHeight="842" columnWidth="555" leftMargin="20" rightMargin="20" topMargin="20" bottomMargin="20"$attributes>
@@ -16,9 +36,16 @@ class JasperReferencesTest : BasePlatformTestCase() {
         </jasperReport>
     """.trimIndent()
 
+    /** Le rapport est placé dans la racine de sources, comme dans un vrai module (sinon pas d'erreurs Java). */
     private fun configure(body: String, attributes: String = "") {
-        myFixture.configureByText("report.jrxml", report(body, attributes))
+        val text = report(body, attributes)
+        val caret = text.indexOf("<caret>")
+        val file = myFixture.addFileToProject("report.jrxml", text.replace("<caret>", ""))
+        myFixture.configureFromExistingVirtualFile(file.virtualFile)
+        if (caret >= 0) myFixture.editor.caretModel.moveToOffset(caret)
     }
+
+    private fun hostText(): String = InjectedLanguageEditorUtil.getTopLevelEditor(myFixture.editor).document.text
 
     private fun highlights(): List<String> {
         myFixture.enableInspections(
@@ -50,7 +77,7 @@ class JasperReferencesTest : BasePlatformTestCase() {
             </title>
         """)
         myFixture.renameElementAtCaret("total")
-        val text = myFixture.editor.document.text
+        val text = hostText()
         assertTrue(text, text.contains("<field name=\"total\""))
         assertTrue(text, text.contains("<![CDATA[${'$'}F{total} > 0 ? \"+\" : \"\"]]>"))
         assertTrue(text, text.contains("<![CDATA[${'$'}F{total}]]>"))
@@ -73,8 +100,13 @@ class JasperReferencesTest : BasePlatformTestCase() {
             <variable name="Total" class="java.lang.Integer"/>
             <title height="20"><element kind="textField" x="0" y="0" width="100" height="20"><expression><![CDATA[${'$'}V{Tot<caret>]]></expression></element></title>
         """)
-        myFixture.completeBasic()
-        assertTrue(myFixture.editor.document.text, myFixture.editor.document.text.contains("<![CDATA[${'$'}V{Total}]]>"))
+        val items = myFixture.completeBasic()
+        // « Tot » propose aussi MASTER_TOTAL_PAGES (correspondance par mots) : on choisit Total.
+        if (items != null) {
+            myFixture.lookup.currentItem = items.first { it.lookupString == "Total" }
+            myFixture.finishLookup(Lookup.NORMAL_SELECT_CHAR)
+        }
+        assertTrue(hostText(), hostText().contains("<![CDATA[${'$'}V{Total}]]>"))
     }
 
     fun testTableCellCompletesSubDatasetFields() {
@@ -102,7 +134,7 @@ class JasperReferencesTest : BasePlatformTestCase() {
         assertEquals(problems.toString(), 1, problems.count { it.contains("is not declared") })
 
         myFixture.launchAction(myFixture.findSingleIntention("Create field \"missing\""))
-        val text = myFixture.editor.document.text
+        val text = hostText()
         assertTrue(text, text.contains("<field name=\"amount\" class=\"java.lang.Integer\"/>\n<field name=\"missing\" class=\"java.lang.String\"/>")
             || Regex("""<field name="amount"[^>]*/>\s*<field name="missing" class="java.lang.String"/>""").containsMatchIn(text))
     }
@@ -149,5 +181,59 @@ class JasperReferencesTest : BasePlatformTestCase() {
     fun testOtherXmlFilesAreIgnored() {
         myFixture.configureByText("other.xml", "<root><expression>${'$'}F{x}</expression></root>")
         assertTrue(highlights().isEmpty())
+    }
+
+    fun testSubreportLiteralNavigatesToItsSource() {
+        myFixture.addFileToProject("Detail.jrxml", report(""))
+        configure("""
+            <title height="20"><element kind="subreport" x="0" y="0" width="100" height="20"><expression><![CDATA["Det<caret>ail.jasper"]]></expression></element></title>
+        """)
+        val reference = myFixture.file.findReferenceAt(myFixture.caretOffset)
+        val target = reference?.resolve()
+        assertEquals("$reference -> $target", "Detail.jrxml", (target as? com.intellij.psi.PsiFile)?.name)
+    }
+
+    fun testMissingSubreportIsReported() {
+        configure("""
+            <title height="20"><element kind="subreport" x="0" y="0" width="100" height="20"><expression><![CDATA["Nowhere.jasper"]]></expression></element></title>
+        """)
+        assertTrue(highlights().any { it.contains("Nowhere.jrxml") })
+    }
+
+    fun testJavaCompletionOnTypedField() {
+        configure("""
+            <field name="label" class="java.lang.String"/>
+            <title height="20"><element kind="textField" x="0" y="0" width="100" height="20"><expression><![CDATA[${'$'}F{label}.toLower<caret>]]></expression></element></title>
+        """)
+        myFixture.completeBasic()
+        val text = hostText()
+        val names = myFixture.lookupElementStrings
+        assertTrue("$names / $text", names?.contains("toLowerCase") == true || text.contains("${'$'}F{label}.toLowerCase("))
+    }
+
+    fun testJavaErrorsAreShownButJasperFunctionsAreNot() {
+        // Fonctions déclarées comme le fait jasperreports-functions : une statique, une d'instance.
+        myFixture.addFileToProject("jasperreports_extension.properties",
+            "net.sf.jasperreports.extension.functions.test=test.Fns\n")
+        myFixture.addFileToProject("test/Fns.java",
+            "package test; public class Fns { public static Integer SUM(int a, int b) { return a + b; } public String label() { return \"\"; } }")
+        configure("""
+            <field name="label" class="java.lang.String"/>
+            <title height="20"><element kind="textField" x="0" y="0" width="100" height="20"><expression><![CDATA[${'$'}F{label}.noSuchMethod() + SUM(1, 2) + label()]]></expression></element></title>
+        """)
+        val problems = highlights()
+        assertTrue(problems.toString(), problems.any { it.contains("noSuchMethod") })
+        assertFalse(problems.toString(), problems.any { it.contains("'SUM'") || it.contains("'label'") })
+    }
+
+    fun testSimpleTextExpressionsAreNotJava() {
+        configure("""
+            <parameter name="Customers" class="java.lang.String"/>
+            <title height="20"><element kind="textField" x="0" y="0" width="100" height="20">
+              <propertyExpression name="net.sf.jasperreports.export.xls.sheet.name" type="simpleText"><![CDATA[${'$'}P{Customers} sheet ${'$'}V{PAGE_NUMBER}]]></propertyExpression>
+              <expression><![CDATA[${'$'}P{Customers}]]></expression>
+            </element></title>
+        """)
+        assertFalse(highlights().toString(), highlights().any { it.contains("expected") })
     }
 }
